@@ -30,6 +30,7 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
+pub mod cpi;
 pub mod state;
 pub mod strategy;
 pub mod utils;
@@ -38,6 +39,7 @@ use state::*;
 use strategy::{TradeSignal, StrategyParams, MarketInput, run_inference};
 use utils::privacy_bridge::{ZkProof, verify_deposit_proof, DepositError};
 use utils::compliance::{RangeAttestation, verify_compliance};
+use cpi::{TradeSide, TradeParams, TradeResult, MockMarket, PRICE_SCALE};
 
 declare_id!("B2at4oGQFPAbuH2wMMpBsFrTvJi71GUvR7jyxny7HaGf");
 
@@ -466,6 +468,251 @@ pub mod spectre_protocol {
 
         Ok(signal)
     }
+
+    // ============================================
+    // LAYER 3: THE HAND - Trading Instructions
+    // ============================================
+
+    /// Execute a trade based on market conditions and strategy signal
+    ///
+    /// This is the main entry point for automated trading. It:
+    /// 1. Generates a trade signal from market data
+    /// 2. Calculates position size based on signal strength
+    /// 3. Opens a position if signal is actionable
+    ///
+    /// Note: In Phase 3, we use a mock market for testing.
+    /// Real PNP integration would use CPI to the PNP program.
+    pub fn execute_trade(
+        ctx: Context<ExecuteTrade>,
+        market_input: MarketInput,
+    ) -> Result<TradeResult> {
+        let clock = Clock::get()?;
+        let vault = &mut ctx.accounts.vault;
+        let config = &mut ctx.accounts.strategy_config;
+
+        // 1. Ensure vault is active and has sufficient balance
+        require!(vault.is_active, SpectreError::VaultInactive);
+        require!(vault.available_balance > 0, SpectreError::InsufficientVaultBalance);
+
+        // 2. Build strategy params and generate signal
+        let params = StrategyParams::new(
+            config.price_threshold_low,
+            config.price_threshold_high,
+            config.trend_threshold,
+            config.volatility_cap,
+        );
+
+        let signal = run_inference(&market_input, &params);
+
+        // 3. Update strategy stats
+        config.last_signal = match signal {
+            TradeSignal::StrongBuy => 1,
+            TradeSignal::Buy => 2,
+            TradeSignal::Hold => 3,
+            TradeSignal::Sell => 4,
+            TradeSignal::StrongSell => 5,
+        };
+        config.last_signal_at = clock.unix_timestamp;
+        config.total_signals = config.total_signals.saturating_add(1);
+
+        // 4. Determine if we should trade
+        let should_trade = signal.is_buy() || signal.is_sell();
+
+        if !should_trade {
+            msg!("Signal is HOLD - no trade executed");
+            return Ok(TradeResult::default());
+        }
+
+        // 5. Calculate position size (5% for normal, 10% for strong signals)
+        let is_strong = signal.is_strong();
+        let position_size = vault.calculate_position_size(is_strong);
+
+        // Ensure position size is valid
+        require!(
+            position_size >= cpi::MIN_TRADE_AMOUNT,
+            SpectreError::InsufficientVaultBalance
+        );
+
+        // 6. Determine trade side
+        let side = if signal.is_buy() {
+            TradeSide::Yes
+        } else {
+            TradeSide::No
+        };
+
+        // 7. Create trade params
+        let trade_params = TradeParams::market_order(side, position_size);
+
+        // 8. Execute trade on mock market
+        // In production, this would be a CPI to PNP Exchange
+        let mut mock_market = MockMarket::default();
+        let result = mock_market.execute_trade(&trade_params);
+
+        if result.success {
+            // 9. Update vault state
+            vault.available_balance = vault.available_balance
+                .saturating_sub(result.amount_traded);
+            vault.total_volume = vault.total_volume
+                .saturating_add(result.amount_traded);
+            vault.last_trade_slot = clock.slot;
+
+            msg!("Trade executed successfully");
+            msg!("  Signal: {:?}", signal);
+            msg!("  Side: {:?}", side);
+            msg!("  Amount: {} lamports", result.amount_traded);
+            msg!("  Shares: {}", result.shares_received);
+            msg!("  Price: {}", result.execution_price);
+        } else {
+            msg!("Trade execution failed");
+        }
+
+        Ok(result)
+    }
+
+    /// Open a new trading position
+    ///
+    /// Creates a Position account to track an active market position.
+    /// This is called after a successful trade to record the position.
+    pub fn open_position(
+        ctx: Context<OpenPosition>,
+        market_id: Pubkey,
+        side: TradeSide,
+        shares: u64,
+        entry_price: u64,
+        invested_amount: u64,
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+
+        // Get vault key before mutable borrow
+        let vault_key = ctx.accounts.vault.key();
+
+        // Validate inputs
+        require!(shares > 0, SpectreError::InvalidTradeAmount);
+        require!(invested_amount > 0, SpectreError::InvalidTradeAmount);
+        require!(entry_price > 0, SpectreError::InvalidPrice);
+
+        // Ensure vault has sufficient balance
+        require!(
+            ctx.accounts.vault.available_balance >= invested_amount,
+            SpectreError::InsufficientVaultBalance
+        );
+
+        // Initialize position
+        let position = &mut ctx.accounts.position;
+        position.vault = vault_key;
+        position.market_id = market_id;
+        position.side = match side {
+            TradeSide::Yes => Side::Yes,
+            TradeSide::No => Side::No,
+        };
+        position.shares = shares;
+        position.entry_price = entry_price;
+        position.invested_amount = invested_amount;
+        position.status = PositionStatus::Open;
+        position.opened_at = clock.unix_timestamp;
+        position.closed_at = 0;
+        position.exit_price = 0;
+        position.realized_pnl = 0;
+        position.bump = ctx.bumps.position;
+
+        // Update vault state
+        let vault = &mut ctx.accounts.vault;
+        vault.available_balance = vault.available_balance
+            .saturating_sub(invested_amount);
+        vault.active_positions = vault.active_positions
+            .saturating_add(1);
+        vault.total_volume = vault.total_volume
+            .saturating_add(invested_amount);
+        vault.last_trade_slot = clock.slot;
+
+        msg!("Position opened");
+        msg!("  Market: {}", market_id);
+        msg!("  Side: {:?}", side);
+        msg!("  Shares: {}", shares);
+        msg!("  Entry price: {}", entry_price);
+        msg!("  Invested: {} lamports", invested_amount);
+
+        Ok(())
+    }
+
+    /// Close an existing trading position
+    ///
+    /// Closes a position and calculates realized PnL.
+    /// Returns funds to the vault's available balance.
+    pub fn close_position(
+        ctx: Context<ClosePosition>,
+        exit_price: u64,
+    ) -> Result<i64> {
+        let clock = Clock::get()?;
+        let vault = &mut ctx.accounts.vault;
+        let position = &mut ctx.accounts.position;
+
+        // Verify position is open
+        require!(
+            position.status == PositionStatus::Open,
+            SpectreError::PositionAlreadyClosed
+        );
+
+        // Validate exit price
+        require!(exit_price > 0, SpectreError::InvalidPrice);
+
+        // Calculate position value at exit
+        // value = shares * exit_price / PRICE_SCALE
+        let exit_value = (position.shares as u128)
+            .saturating_mul(exit_price as u128)
+            .saturating_div(PRICE_SCALE as u128) as u64;
+
+        // Calculate realized PnL
+        let realized_pnl = (exit_value as i64)
+            .saturating_sub(position.invested_amount as i64);
+
+        // Update position state
+        position.status = PositionStatus::Closed;
+        position.closed_at = clock.unix_timestamp;
+        position.exit_price = exit_price;
+        position.realized_pnl = realized_pnl;
+
+        // Update vault state
+        vault.available_balance = vault.available_balance
+            .saturating_add(exit_value);
+        vault.active_positions = vault.active_positions
+            .saturating_sub(1);
+        vault.last_trade_slot = clock.slot;
+
+        msg!("Position closed");
+        msg!("  Market: {}", position.market_id);
+        msg!("  Side: {:?}", position.side);
+        msg!("  Exit price: {}", exit_price);
+        msg!("  Exit value: {} lamports", exit_value);
+        msg!("  Realized PnL: {} lamports", realized_pnl);
+
+        Ok(realized_pnl)
+    }
+
+    /// Get position information
+    ///
+    /// Returns the current unrealized PnL for an open position
+    /// given the current market price.
+    pub fn get_position_pnl(
+        ctx: Context<GetPositionPnl>,
+        current_price: u64,
+    ) -> Result<i64> {
+        let position = &ctx.accounts.position;
+
+        // For closed positions, return realized PnL
+        if position.status != PositionStatus::Open {
+            return Ok(position.realized_pnl);
+        }
+
+        // Calculate unrealized PnL
+        let pnl = position.calculate_unrealized_pnl(current_price);
+
+        msg!("Position PnL calculated");
+        msg!("  Current price: {}", current_price);
+        msg!("  Unrealized PnL: {} lamports", pnl);
+
+        Ok(pnl)
+    }
 }
 
 // ============================================
@@ -777,6 +1024,109 @@ pub struct GenerateTradeSignal<'info> {
 }
 
 // ============================================
+// Phase 3: THE HAND - Trading Account Contexts
+// ============================================
+
+/// Accounts for executing a trade
+#[derive(Accounts)]
+pub struct ExecuteTrade<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, vault.authority.as_ref()],
+        bump = vault.vault_bump,
+        constraint = vault.is_active @ SpectreError::VaultInactive
+    )]
+    pub vault: Account<'info, SpectreVault>,
+
+    #[account(
+        mut,
+        seeds = [STRATEGY_CONFIG_SEED, vault.key().as_ref()],
+        bump = strategy_config.bump,
+        constraint = strategy_config.is_active @ SpectreError::StrategyNotActive
+    )]
+    pub strategy_config: Account<'info, StrategyConfig>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Accounts for opening a position
+#[derive(Accounts)]
+#[instruction(market_id: Pubkey, side: TradeSide, shares: u64, entry_price: u64, invested_amount: u64)]
+pub struct OpenPosition<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, authority.key().as_ref()],
+        bump = vault.vault_bump,
+        constraint = vault.authority == authority.key() @ SpectreError::Unauthorized,
+        constraint = vault.is_active @ SpectreError::VaultInactive,
+        constraint = vault.active_positions < MAX_POSITIONS as u32 @ SpectreError::MaxPositionsReached
+    )]
+    pub vault: Account<'info, SpectreVault>,
+
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + Position::INIT_SPACE,
+        seeds = [POSITION_SEED, vault.key().as_ref(), market_id.as_ref()],
+        bump
+    )]
+    pub position: Account<'info, Position>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Accounts for closing a position
+#[derive(Accounts)]
+pub struct ClosePosition<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, authority.key().as_ref()],
+        bump = vault.vault_bump,
+        constraint = vault.authority == authority.key() @ SpectreError::Unauthorized
+    )]
+    pub vault: Account<'info, SpectreVault>,
+
+    #[account(
+        mut,
+        seeds = [POSITION_SEED, vault.key().as_ref(), position.market_id.as_ref()],
+        bump = position.bump,
+        constraint = position.vault == vault.key() @ SpectreError::PositionNotFound,
+        constraint = position.status == PositionStatus::Open @ SpectreError::PositionAlreadyClosed
+    )]
+    pub position: Account<'info, Position>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Accounts for getting position PnL
+#[derive(Accounts)]
+pub struct GetPositionPnl<'info> {
+    pub authority: Signer<'info>,
+
+    #[account(
+        seeds = [VAULT_SEED, vault.authority.as_ref()],
+        bump = vault.vault_bump
+    )]
+    pub vault: Account<'info, SpectreVault>,
+
+    #[account(
+        seeds = [POSITION_SEED, vault.key().as_ref(), position.market_id.as_ref()],
+        bump = position.bump,
+        constraint = position.vault == vault.key() @ SpectreError::PositionNotFound
+    )]
+    pub position: Account<'info, Position>,
+}
+
+// ============================================
 // Error Definitions
 // ============================================
 
@@ -855,7 +1205,7 @@ pub enum SpectreError {
     InvalidOracleSignature,
 
     // ============================================
-    // Trading Errors
+    // Trading Errors (Phase 3)
     // ============================================
     #[msg("Position not found")]
     PositionNotFound,
@@ -868,6 +1218,27 @@ pub enum SpectreError {
 
     #[msg("Market not found")]
     MarketNotFound,
+
+    #[msg("Invalid trade amount")]
+    InvalidTradeAmount,
+
+    #[msg("Invalid price")]
+    InvalidPrice,
+
+    #[msg("Maximum positions reached")]
+    MaxPositionsReached,
+
+    #[msg("Trade execution failed")]
+    TradeExecutionFailed,
+
+    #[msg("Slippage exceeded")]
+    SlippageExceeded,
+
+    #[msg("Market is not active")]
+    MarketNotActive,
+
+    #[msg("Insufficient liquidity")]
+    InsufficientLiquidity,
 
     // ============================================
     // Strategy Errors (Phase 2)

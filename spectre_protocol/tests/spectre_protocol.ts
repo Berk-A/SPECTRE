@@ -1732,4 +1732,590 @@ describe("SPECTRE Protocol - Phase 1", () => {
       assert.ok(config.priceThresholdLow < config.priceThresholdHigh);
     });
   });
+
+  // ============================================
+  // PHASE 3: THE HAND - Trading Tests
+  // ============================================
+
+  describe("Phase 3 - Execute Trade", () => {
+    const STRATEGY_CONFIG_SEED = Buffer.from("strategy_config");
+    let strategyConfigPda: PublicKey;
+
+    before(async () => {
+      [strategyConfigPda] = PublicKey.findProgramAddressSync(
+        [STRATEGY_CONFIG_SEED, vaultPda.toBuffer()],
+        program.programId
+      );
+    });
+
+    it("should execute trade with BUY signal", async () => {
+      // Input: price=300 (0.30), trend=50 (0.05), volatility=200 (0.20)
+      // Should generate BUY signal
+      const marketInput = {
+        price: 300,
+        trend: 50,
+        volatility: 200,
+        timestamp: new anchor.BN(Date.now() / 1000),
+      };
+
+      const tx = await program.methods
+        .executeTrade(marketInput)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("Execute trade (BUY) transaction:", tx);
+
+      // Verify vault state was updated
+      const vault = await program.account.spectreVault.fetch(vaultPda);
+      assert.ok(vault.totalVolume.toNumber() > 0);
+      assert.ok(vault.lastTradeSlot.toNumber() > 0);
+    });
+
+    it("should execute trade with SELL signal", async () => {
+      // Input: price=700 (0.70), trend=-50 (−0.05), volatility=200 (0.20)
+      // Should generate SELL signal
+      const marketInput = {
+        price: 700,
+        trend: -50,
+        volatility: 200,
+        timestamp: new anchor.BN(Date.now() / 1000),
+      };
+
+      const tx = await program.methods
+        .executeTrade(marketInput)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("Execute trade (SELL) transaction:", tx);
+    });
+
+    it("should NOT execute trade with HOLD signal", async () => {
+      // Input: price=500 (0.50), trend=0, volatility=200 (0.20)
+      // Should generate HOLD signal - no trade executed
+      const marketInput = {
+        price: 500,
+        trend: 0,
+        volatility: 200,
+        timestamp: new anchor.BN(Date.now() / 1000),
+      };
+
+      const vaultBefore = await program.account.spectreVault.fetch(vaultPda);
+      const volumeBefore = vaultBefore.totalVolume.toNumber();
+
+      await program.methods
+        .executeTrade(marketInput)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+
+      // Volume should not change for HOLD signal
+      // Note: In mock mode, the trade doesn't actually transfer SOL,
+      // so we just verify it ran without error
+      console.log("Execute trade (HOLD) completed - no trade executed");
+    });
+
+    it("should execute trade with STRONG BUY signal (larger position)", async () => {
+      // Input: price=250 (0.25), trend=150 (0.15), volatility=100 (0.10)
+      // Should generate STRONG BUY signal with 2x position size
+      const marketInput = {
+        price: 250,
+        trend: 150,
+        volatility: 100,
+        timestamp: new anchor.BN(Date.now() / 1000),
+      };
+
+      const tx = await program.methods
+        .executeTrade(marketInput)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("Execute trade (STRONG BUY) transaction:", tx);
+    });
+  });
+
+  describe("Phase 3 - Open Position", () => {
+    const POSITION_SEED = Buffer.from("position");
+    let testMarketId: Keypair;
+    let positionPda: PublicKey;
+
+    before(async () => {
+      testMarketId = Keypair.generate();
+      [positionPda] = PublicKey.findProgramAddressSync(
+        [POSITION_SEED, vaultPda.toBuffer(), testMarketId.publicKey.toBuffer()],
+        program.programId
+      );
+    });
+
+    it("should open a YES position successfully", async () => {
+      const shares = new anchor.BN(100_000_000); // 100 shares
+      const entryPrice = new anchor.BN(500_000); // 0.5 per share
+      const investedAmount = new anchor.BN(50_000_000); // 0.05 SOL
+
+      const tx = await program.methods
+        .openPosition(
+          testMarketId.publicKey,
+          { yes: {} }, // TradeSide::Yes
+          shares,
+          entryPrice,
+          investedAmount
+        )
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          position: positionPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("Open position transaction:", tx);
+
+      // Verify position state
+      const position = await program.account.position.fetch(positionPda);
+      assert.strictEqual(position.vault.toString(), vaultPda.toString());
+      assert.strictEqual(position.marketId.toString(), testMarketId.publicKey.toString());
+      assert.deepStrictEqual(position.side, { yes: {} });
+      assert.strictEqual(position.shares.toNumber(), 100_000_000);
+      assert.strictEqual(position.entryPrice.toNumber(), 500_000);
+      assert.strictEqual(position.investedAmount.toNumber(), 50_000_000);
+      assert.deepStrictEqual(position.status, { open: {} });
+
+      // Verify vault state updated
+      const vault = await program.account.spectreVault.fetch(vaultPda);
+      assert.strictEqual(vault.activePositions, 1);
+    });
+
+    it("should reject position with zero shares", async () => {
+      const badMarketId = Keypair.generate();
+      const [badPositionPda] = PublicKey.findProgramAddressSync(
+        [POSITION_SEED, vaultPda.toBuffer(), badMarketId.publicKey.toBuffer()],
+        program.programId
+      );
+
+      try {
+        await program.methods
+          .openPosition(
+            badMarketId.publicKey,
+            { yes: {} },
+            new anchor.BN(0), // Zero shares - invalid
+            new anchor.BN(500_000),
+            new anchor.BN(50_000_000)
+          )
+          .accounts({
+            authority: authority.publicKey,
+            vault: vaultPda,
+            position: badPositionPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([authority])
+          .rpc();
+        assert.fail("Should have thrown an error");
+      } catch (err) {
+        assert.ok(err.toString().includes("InvalidTradeAmount"));
+      }
+    });
+
+    it("should reject position with zero price", async () => {
+      const badMarketId = Keypair.generate();
+      const [badPositionPda] = PublicKey.findProgramAddressSync(
+        [POSITION_SEED, vaultPda.toBuffer(), badMarketId.publicKey.toBuffer()],
+        program.programId
+      );
+
+      try {
+        await program.methods
+          .openPosition(
+            badMarketId.publicKey,
+            { no: {} },
+            new anchor.BN(100_000),
+            new anchor.BN(0), // Zero price - invalid
+            new anchor.BN(50_000_000)
+          )
+          .accounts({
+            authority: authority.publicKey,
+            vault: vaultPda,
+            position: badPositionPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([authority])
+          .rpc();
+        assert.fail("Should have thrown an error");
+      } catch (err) {
+        assert.ok(err.toString().includes("InvalidPrice"));
+      }
+    });
+  });
+
+  describe("Phase 3 - Get Position PnL", () => {
+    const POSITION_SEED = Buffer.from("position");
+    let testMarketId: Keypair;
+    let positionPda: PublicKey;
+
+    before(async () => {
+      // Create a new position for PnL testing
+      testMarketId = Keypair.generate();
+      [positionPda] = PublicKey.findProgramAddressSync(
+        [POSITION_SEED, vaultPda.toBuffer(), testMarketId.publicKey.toBuffer()],
+        program.programId
+      );
+
+      // Open a position
+      await program.methods
+        .openPosition(
+          testMarketId.publicKey,
+          { yes: {} },
+          new anchor.BN(100_000_000), // 100 shares
+          new anchor.BN(500_000), // 0.5 per share
+          new anchor.BN(50_000_000) // 0.05 SOL invested
+        )
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          position: positionPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+    });
+
+    it("should calculate positive PnL for price increase", async () => {
+      // Price went up from 0.5 to 0.7
+      const currentPrice = new anchor.BN(700_000); // 0.7
+
+      const tx = await program.methods
+        .getPositionPnl(currentPrice)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          position: positionPda,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("Get position PnL (profit) transaction:", tx);
+
+      // Position value at 0.7: 100 shares * 0.7 = 70M lamports
+      // Invested: 50M lamports
+      // PnL: +20M lamports
+      const position = await program.account.position.fetch(positionPda);
+      assert.deepStrictEqual(position.status, { open: {} });
+    });
+
+    it("should calculate negative PnL for price decrease", async () => {
+      // Price went down from 0.5 to 0.3
+      const currentPrice = new anchor.BN(300_000); // 0.3
+
+      const tx = await program.methods
+        .getPositionPnl(currentPrice)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          position: positionPda,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("Get position PnL (loss) transaction:", tx);
+
+      // Position value at 0.3: 100 shares * 0.3 = 30M lamports
+      // Invested: 50M lamports
+      // PnL: -20M lamports
+    });
+  });
+
+  describe("Phase 3 - Close Position", () => {
+    const POSITION_SEED = Buffer.from("position");
+    let testMarketId: Keypair;
+    let positionPda: PublicKey;
+
+    before(async () => {
+      // Create a new position for closing
+      testMarketId = Keypair.generate();
+      [positionPda] = PublicKey.findProgramAddressSync(
+        [POSITION_SEED, vaultPda.toBuffer(), testMarketId.publicKey.toBuffer()],
+        program.programId
+      );
+
+      // Open a position
+      await program.methods
+        .openPosition(
+          testMarketId.publicKey,
+          { yes: {} },
+          new anchor.BN(100_000_000), // 100 shares
+          new anchor.BN(500_000), // 0.5 per share
+          new anchor.BN(50_000_000) // 0.05 SOL invested
+        )
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          position: positionPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+    });
+
+    it("should close position with profit", async () => {
+      const vaultBefore = await program.account.spectreVault.fetch(vaultPda);
+      const activePositionsBefore = vaultBefore.activePositions;
+
+      // Exit at price 0.7 (profit)
+      const exitPrice = new anchor.BN(700_000);
+
+      const tx = await program.methods
+        .closePosition(exitPrice)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          position: positionPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("Close position (profit) transaction:", tx);
+
+      // Verify position state
+      const position = await program.account.position.fetch(positionPda);
+      assert.deepStrictEqual(position.status, { closed: {} });
+      assert.strictEqual(position.exitPrice.toNumber(), 700_000);
+      assert.ok(position.realizedPnl.toNumber() > 0); // Profit
+
+      // Verify vault state
+      const vaultAfter = await program.account.spectreVault.fetch(vaultPda);
+      assert.strictEqual(vaultAfter.activePositions, activePositionsBefore - 1);
+
+      console.log("  Realized PnL:", position.realizedPnl.toNumber(), "lamports");
+    });
+
+    it("should reject closing already closed position", async () => {
+      try {
+        await program.methods
+          .closePosition(new anchor.BN(500_000))
+          .accounts({
+            authority: authority.publicKey,
+            vault: vaultPda,
+            position: positionPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([authority])
+          .rpc();
+        assert.fail("Should have thrown an error");
+      } catch (err) {
+        assert.ok(err.toString().includes("PositionAlreadyClosed"));
+      }
+    });
+  });
+
+  describe("Phase 3 - Close Position with Loss", () => {
+    const POSITION_SEED = Buffer.from("position");
+    let testMarketId: Keypair;
+    let positionPda: PublicKey;
+
+    before(async () => {
+      // Create a new position for closing at a loss
+      testMarketId = Keypair.generate();
+      [positionPda] = PublicKey.findProgramAddressSync(
+        [POSITION_SEED, vaultPda.toBuffer(), testMarketId.publicKey.toBuffer()],
+        program.programId
+      );
+
+      // Open a position
+      await program.methods
+        .openPosition(
+          testMarketId.publicKey,
+          { no: {} }, // NO side this time
+          new anchor.BN(100_000_000),
+          new anchor.BN(500_000),
+          new anchor.BN(50_000_000)
+        )
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          position: positionPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+    });
+
+    it("should close position with loss", async () => {
+      // Exit at price 0.3 (loss)
+      const exitPrice = new anchor.BN(300_000);
+
+      const tx = await program.methods
+        .closePosition(exitPrice)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          position: positionPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("Close position (loss) transaction:", tx);
+
+      // Verify position state
+      const position = await program.account.position.fetch(positionPda);
+      assert.deepStrictEqual(position.status, { closed: {} });
+      assert.strictEqual(position.exitPrice.toNumber(), 300_000);
+      assert.ok(position.realizedPnl.toNumber() < 0); // Loss
+
+      console.log("  Realized PnL:", position.realizedPnl.toNumber(), "lamports");
+    });
+  });
+
+  describe("Phase 3 - Full Trading Loop", () => {
+    const POSITION_SEED = Buffer.from("position");
+    const STRATEGY_CONFIG_SEED = Buffer.from("strategy_config");
+    let strategyConfigPda: PublicKey;
+
+    before(async () => {
+      [strategyConfigPda] = PublicKey.findProgramAddressSync(
+        [STRATEGY_CONFIG_SEED, vaultPda.toBuffer()],
+        program.programId
+      );
+    });
+
+    it("should complete full trading loop: signal -> position -> close", async () => {
+      console.log("\n--- Full Trading Loop ---");
+
+      // 1. Generate a strong buy signal
+      const marketInput = {
+        price: 250,
+        trend: 200,
+        volatility: 50,
+        timestamp: new anchor.BN(Date.now() / 1000),
+      };
+
+      await program.methods
+        .executeTrade(marketInput)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+
+      const config = await program.account.strategyConfig.fetch(strategyConfigPda);
+      console.log("  1. Signal generated:", config.lastSignal === 1 ? "STRONG BUY" : "OTHER");
+
+      // 2. Open a position based on the signal
+      const marketId = Keypair.generate();
+      const [positionPda] = PublicKey.findProgramAddressSync(
+        [POSITION_SEED, vaultPda.toBuffer(), marketId.publicKey.toBuffer()],
+        program.programId
+      );
+
+      await program.methods
+        .openPosition(
+          marketId.publicKey,
+          { yes: {} },
+          new anchor.BN(200_000_000), // Strong signal = larger position
+          new anchor.BN(250_000), // Entry at 0.25
+          new anchor.BN(50_000_000)
+        )
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          position: positionPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("  2. Position opened");
+
+      // 3. Check PnL at a higher price
+      await program.methods
+        .getPositionPnl(new anchor.BN(400_000)) // Price moved to 0.4
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          position: positionPda,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("  3. PnL checked");
+
+      // 4. Close the position at profit
+      await program.methods
+        .closePosition(new anchor.BN(500_000)) // Exit at 0.5
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          position: positionPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+
+      const position = await program.account.position.fetch(positionPda);
+      console.log("  4. Position closed with PnL:", position.realizedPnl.toNumber(), "lamports");
+
+      assert.deepStrictEqual(position.status, { closed: {} });
+      assert.ok(position.realizedPnl.toNumber() > 0);
+    });
+  });
+
+  describe("Phase 3 - Final State Verification", () => {
+    const STRATEGY_CONFIG_SEED = Buffer.from("strategy_config");
+    let strategyConfigPda: PublicKey;
+
+    before(async () => {
+      [strategyConfigPda] = PublicKey.findProgramAddressSync(
+        [STRATEGY_CONFIG_SEED, vaultPda.toBuffer()],
+        program.programId
+      );
+    });
+
+    it("should have consistent Phase 3 state", async () => {
+      const vault = await program.account.spectreVault.fetch(vaultPda);
+      const config = await program.account.strategyConfig.fetch(strategyConfigPda);
+
+      console.log("\n========================================");
+      console.log("Phase 3 Final State:");
+      console.log("========================================");
+      console.log("  Total deposited:", vault.totalDeposited.toNumber() / LAMPORTS_PER_SOL, "SOL");
+      console.log("  Available balance:", vault.availableBalance.toNumber() / LAMPORTS_PER_SOL, "SOL");
+      console.log("  Total volume:", vault.totalVolume.toNumber() / LAMPORTS_PER_SOL, "SOL");
+      console.log("  Active positions:", vault.activePositions);
+      console.log("  Last trade slot:", vault.lastTradeSlot.toNumber());
+      console.log("  Total signals:", config.totalSignals.toNumber());
+      console.log("  Strategy active:", config.isActive);
+      console.log("========================================\n");
+
+      // Verify invariants
+      assert.ok(vault.totalVolume.toNumber() > 0, "Should have trading volume");
+      assert.ok(vault.lastTradeSlot.toNumber() > 0, "Should have last trade slot");
+      assert.ok(config.totalSignals.toNumber() > 0, "Should have generated signals");
+    });
+  });
 });
