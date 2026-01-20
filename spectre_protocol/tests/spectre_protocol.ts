@@ -1147,4 +1147,589 @@ describe("SPECTRE Protocol - Phase 1", () => {
       assert.ok(vaultBalance > 0);
     });
   });
+
+  // ============================================
+  // PHASE 2: THE BRAIN - TEE & Strategy Tests
+  // ============================================
+
+  describe("Phase 2 - Initialize Strategy", () => {
+    const STRATEGY_CONFIG_SEED = Buffer.from("strategy_config");
+    let strategyConfigPda: PublicKey;
+
+    before(async () => {
+      [strategyConfigPda] = PublicKey.findProgramAddressSync(
+        [STRATEGY_CONFIG_SEED, vaultPda.toBuffer()],
+        program.programId
+      );
+    });
+
+    it("should initialize strategy with default params", async () => {
+      const tx = await program.methods
+        .initializeStrategy(null) // Use default params
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("Initialize strategy transaction:", tx);
+
+      // Verify strategy config state
+      const config = await program.account.strategyConfig.fetch(strategyConfigPda);
+      assert.strictEqual(config.vault.toString(), vaultPda.toString());
+      assert.strictEqual(config.authority.toString(), authority.publicKey.toString());
+      assert.strictEqual(config.priceThresholdLow, 350);
+      assert.strictEqual(config.priceThresholdHigh, 650);
+      assert.strictEqual(config.trendThreshold, 100);
+      assert.strictEqual(config.volatilityCap, 400);
+      assert.strictEqual(config.isActive, true);
+      assert.strictEqual(config.totalSignals.toNumber(), 0);
+    });
+
+    it("should reject duplicate strategy initialization", async () => {
+      try {
+        await program.methods
+          .initializeStrategy(null)
+          .accounts({
+            authority: authority.publicKey,
+            vault: vaultPda,
+            strategyConfig: strategyConfigPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([authority])
+          .rpc();
+        assert.fail("Should have thrown an error");
+      } catch (err) {
+        assert.ok(err.toString().includes("already in use"));
+      }
+    });
+  });
+
+  describe("Phase 2 - Delegate to TEE", () => {
+    it("should delegate vault to TEE successfully", async () => {
+      // Verify vault is not delegated before
+      let vault = await program.account.spectreVault.fetch(vaultPda);
+      assert.strictEqual(vault.isDelegated, false);
+
+      const tx = await program.methods
+        .delegateToTee()
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          delegationProgram: null, // No actual TEE in local testing
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("Delegate to TEE transaction:", tx);
+
+      // Verify vault is now delegated
+      vault = await program.account.spectreVault.fetch(vaultPda);
+      assert.strictEqual(vault.isDelegated, true);
+    });
+
+    it("should reject double delegation", async () => {
+      try {
+        await program.methods
+          .delegateToTee()
+          .accounts({
+            authority: authority.publicKey,
+            vault: vaultPda,
+            delegationProgram: null,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([authority])
+          .rpc();
+        assert.fail("Should have thrown an error");
+      } catch (err) {
+        assert.ok(err.toString().includes("VaultAlreadyDelegated"));
+      }
+    });
+
+    it("should reject delegation from non-authority", async () => {
+      const notAuthority = Keypair.generate();
+      const airdrop = await provider.connection.requestAirdrop(
+        notAuthority.publicKey,
+        1 * LAMPORTS_PER_SOL
+      );
+      await provider.connection.confirmTransaction(airdrop);
+
+      try {
+        await program.methods
+          .delegateToTee()
+          .accounts({
+            authority: notAuthority.publicKey,
+            vault: vaultPda,
+            delegationProgram: null,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([notAuthority])
+          .rpc();
+        assert.fail("Should have thrown an error");
+      } catch (err) {
+        // Should fail due to PDA constraint (vault doesn't match authority)
+        assert.ok(err.toString().includes("Error") || err.toString().includes("constraint"));
+      }
+    });
+  });
+
+  describe("Phase 2 - Generate Trade Signal", () => {
+    const STRATEGY_CONFIG_SEED = Buffer.from("strategy_config");
+    let strategyConfigPda: PublicKey;
+
+    before(async () => {
+      [strategyConfigPda] = PublicKey.findProgramAddressSync(
+        [STRATEGY_CONFIG_SEED, vaultPda.toBuffer()],
+        program.programId
+      );
+    });
+
+    it("should generate BUY signal for low price with positive trend", async () => {
+      // Input: price=300 (0.30), trend=50 (0.05), volatility=200 (0.20)
+      const marketInput = {
+        price: 300,
+        trend: 50,
+        volatility: 200,
+        timestamp: new anchor.BN(Date.now() / 1000),
+      };
+
+      const tx = await program.methods
+        .generateTradeSignal(marketInput)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("Generate buy signal transaction:", tx);
+
+      // Check strategy config was updated
+      const config = await program.account.strategyConfig.fetch(strategyConfigPda);
+      assert.strictEqual(config.totalSignals.toNumber(), 1);
+      assert.strictEqual(config.lastSignal, 2); // Buy = 2
+    });
+
+    it("should generate STRONG BUY signal for very low price with strong trend", async () => {
+      // Input: price=250 (0.25), trend=150 (0.15), volatility=100 (0.10)
+      const marketInput = {
+        price: 250,
+        trend: 150,
+        volatility: 100,
+        timestamp: new anchor.BN(Date.now() / 1000),
+      };
+
+      await program.methods
+        .generateTradeSignal(marketInput)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+        })
+        .signers([authority])
+        .rpc();
+
+      const config = await program.account.strategyConfig.fetch(strategyConfigPda);
+      assert.strictEqual(config.totalSignals.toNumber(), 2);
+      assert.strictEqual(config.lastSignal, 1); // StrongBuy = 1
+    });
+
+    it("should generate SELL signal for high price with negative trend", async () => {
+      // Input: price=700 (0.70), trend=-50 (−0.05), volatility=200 (0.20)
+      const marketInput = {
+        price: 700,
+        trend: -50,
+        volatility: 200,
+        timestamp: new anchor.BN(Date.now() / 1000),
+      };
+
+      await program.methods
+        .generateTradeSignal(marketInput)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+        })
+        .signers([authority])
+        .rpc();
+
+      const config = await program.account.strategyConfig.fetch(strategyConfigPda);
+      assert.strictEqual(config.totalSignals.toNumber(), 3);
+      assert.strictEqual(config.lastSignal, 4); // Sell = 4
+    });
+
+    it("should generate STRONG SELL signal for very high price with strong negative trend", async () => {
+      // Input: price=750 (0.75), trend=-150 (−0.15), volatility=100 (0.10)
+      const marketInput = {
+        price: 750,
+        trend: -150,
+        volatility: 100,
+        timestamp: new anchor.BN(Date.now() / 1000),
+      };
+
+      await program.methods
+        .generateTradeSignal(marketInput)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+        })
+        .signers([authority])
+        .rpc();
+
+      const config = await program.account.strategyConfig.fetch(strategyConfigPda);
+      assert.strictEqual(config.totalSignals.toNumber(), 4);
+      assert.strictEqual(config.lastSignal, 5); // StrongSell = 5
+    });
+
+    it("should generate HOLD signal for high volatility", async () => {
+      // Input: price=300, trend=150, but volatility=450 (0.45) > cap (0.40)
+      const marketInput = {
+        price: 300,
+        trend: 150,
+        volatility: 450,
+        timestamp: new anchor.BN(Date.now() / 1000),
+      };
+
+      await program.methods
+        .generateTradeSignal(marketInput)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+        })
+        .signers([authority])
+        .rpc();
+
+      const config = await program.account.strategyConfig.fetch(strategyConfigPda);
+      assert.strictEqual(config.totalSignals.toNumber(), 5);
+      assert.strictEqual(config.lastSignal, 3); // Hold = 3
+    });
+
+    it("should generate HOLD signal for neutral price", async () => {
+      // Input: price=500 (0.50), trend=50 (0.05), volatility=200 (0.20)
+      const marketInput = {
+        price: 500,
+        trend: 50,
+        volatility: 200,
+        timestamp: new anchor.BN(Date.now() / 1000),
+      };
+
+      await program.methods
+        .generateTradeSignal(marketInput)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+        })
+        .signers([authority])
+        .rpc();
+
+      const config = await program.account.strategyConfig.fetch(strategyConfigPda);
+      assert.strictEqual(config.totalSignals.toNumber(), 6);
+      assert.strictEqual(config.lastSignal, 3); // Hold = 3
+    });
+  });
+
+  describe("Phase 2 - Update Model", () => {
+    it("should update model hash successfully", async () => {
+      const newModelHash = new Array(32).fill(0).map((_, i) => i % 256);
+
+      const tx = await program.methods
+        .updateModel(newModelHash)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("Update model transaction:", tx);
+
+      const vault = await program.account.spectreVault.fetch(vaultPda);
+      assert.deepStrictEqual(Array.from(vault.modelHash), newModelHash);
+    });
+
+    it("should reject model update from non-authority", async () => {
+      const notAuthority = Keypair.generate();
+      const airdrop = await provider.connection.requestAirdrop(
+        notAuthority.publicKey,
+        1 * LAMPORTS_PER_SOL
+      );
+      await provider.connection.confirmTransaction(airdrop);
+
+      try {
+        await program.methods
+          .updateModel(new Array(32).fill(99))
+          .accounts({
+            authority: notAuthority.publicKey,
+            vault: vaultPda,
+          })
+          .signers([notAuthority])
+          .rpc();
+        assert.fail("Should have thrown an error");
+      } catch (err) {
+        assert.ok(err.toString().includes("Error") || err.toString().includes("constraint"));
+      }
+    });
+  });
+
+  describe("Phase 2 - Set Strategy Params", () => {
+    const STRATEGY_CONFIG_SEED = Buffer.from("strategy_config");
+    let strategyConfigPda: PublicKey;
+
+    before(async () => {
+      [strategyConfigPda] = PublicKey.findProgramAddressSync(
+        [STRATEGY_CONFIG_SEED, vaultPda.toBuffer()],
+        program.programId
+      );
+    });
+
+    it("should update strategy params successfully", async () => {
+      // Set aggressive params
+      const aggressiveParams = {
+        priceThresholdLow: 400,
+        priceThresholdHigh: 600,
+        trendThreshold: 50,
+        volatilityCap: 500,
+        reserved: new Array(16).fill(0),
+      };
+
+      const tx = await program.methods
+        .setStrategyParams(aggressiveParams)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("Set strategy params transaction:", tx);
+
+      const config = await program.account.strategyConfig.fetch(strategyConfigPda);
+      assert.strictEqual(config.priceThresholdLow, 400);
+      assert.strictEqual(config.priceThresholdHigh, 600);
+      assert.strictEqual(config.trendThreshold, 50);
+      assert.strictEqual(config.volatilityCap, 500);
+    });
+
+    it("should reject invalid params (low >= high)", async () => {
+      const invalidParams = {
+        priceThresholdLow: 700, // Higher than high threshold
+        priceThresholdHigh: 300,
+        trendThreshold: 100,
+        volatilityCap: 400,
+        reserved: new Array(16).fill(0),
+      };
+
+      try {
+        await program.methods
+          .setStrategyParams(invalidParams)
+          .accounts({
+            authority: authority.publicKey,
+            vault: vaultPda,
+            strategyConfig: strategyConfigPda,
+          })
+          .signers([authority])
+          .rpc();
+        assert.fail("Should have thrown an error");
+      } catch (err) {
+        assert.ok(err.toString().includes("InvalidStrategyParams"));
+      }
+    });
+
+    it("should reject zero volatility cap", async () => {
+      const invalidParams = {
+        priceThresholdLow: 350,
+        priceThresholdHigh: 650,
+        trendThreshold: 100,
+        volatilityCap: 0, // Invalid
+        reserved: new Array(16).fill(0),
+      };
+
+      try {
+        await program.methods
+          .setStrategyParams(invalidParams)
+          .accounts({
+            authority: authority.publicKey,
+            vault: vaultPda,
+            strategyConfig: strategyConfigPda,
+          })
+          .signers([authority])
+          .rpc();
+        assert.fail("Should have thrown an error");
+      } catch (err) {
+        assert.ok(err.toString().includes("InvalidStrategyParams"));
+      }
+    });
+  });
+
+  describe("Phase 2 - Undelegate from TEE", () => {
+    it("should undelegate vault from TEE successfully", async () => {
+      // Verify vault is delegated before
+      let vault = await program.account.spectreVault.fetch(vaultPda);
+      assert.strictEqual(vault.isDelegated, true);
+
+      const tx = await program.methods
+        .undelegateFromTee()
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          delegationProgram: null,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority])
+        .rpc();
+
+      console.log("Undelegate from TEE transaction:", tx);
+
+      // Verify vault is now undelegated
+      vault = await program.account.spectreVault.fetch(vaultPda);
+      assert.strictEqual(vault.isDelegated, false);
+    });
+
+    it("should reject undelegation when not delegated", async () => {
+      try {
+        await program.methods
+          .undelegateFromTee()
+          .accounts({
+            authority: authority.publicKey,
+            vault: vaultPda,
+            delegationProgram: null,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([authority])
+          .rpc();
+        assert.fail("Should have thrown an error");
+      } catch (err) {
+        assert.ok(err.toString().includes("VaultNotDelegated"));
+      }
+    });
+  });
+
+  describe("Phase 2 - Strategy Determinism", () => {
+    const STRATEGY_CONFIG_SEED = Buffer.from("strategy_config");
+    let strategyConfigPda: PublicKey;
+
+    before(async () => {
+      [strategyConfigPda] = PublicKey.findProgramAddressSync(
+        [STRATEGY_CONFIG_SEED, vaultPda.toBuffer()],
+        program.programId
+      );
+
+      // Reset to default params for determinism test
+      const defaultParams = {
+        priceThresholdLow: 350,
+        priceThresholdHigh: 650,
+        trendThreshold: 100,
+        volatilityCap: 400,
+        reserved: new Array(16).fill(0),
+      };
+
+      await program.methods
+        .setStrategyParams(defaultParams)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+        })
+        .signers([authority])
+        .rpc();
+    });
+
+    it("should produce same signal for same inputs (determinism)", async () => {
+      // Run same input multiple times
+      const marketInput = {
+        price: 300,
+        trend: 150,
+        volatility: 100,
+        timestamp: new anchor.BN(Date.now() / 1000),
+      };
+
+      // First run
+      await program.methods
+        .generateTradeSignal(marketInput)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+        })
+        .signers([authority])
+        .rpc();
+
+      let config = await program.account.strategyConfig.fetch(strategyConfigPda);
+      const firstSignal = config.lastSignal;
+
+      // Second run with same input
+      await program.methods
+        .generateTradeSignal(marketInput)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+        })
+        .signers([authority])
+        .rpc();
+
+      config = await program.account.strategyConfig.fetch(strategyConfigPda);
+      const secondSignal = config.lastSignal;
+
+      // Third run with same input
+      await program.methods
+        .generateTradeSignal(marketInput)
+        .accounts({
+          authority: authority.publicKey,
+          vault: vaultPda,
+          strategyConfig: strategyConfigPda,
+        })
+        .signers([authority])
+        .rpc();
+
+      config = await program.account.strategyConfig.fetch(strategyConfigPda);
+      const thirdSignal = config.lastSignal;
+
+      // All signals should be identical (StrongBuy = 1)
+      assert.strictEqual(firstSignal, secondSignal);
+      assert.strictEqual(secondSignal, thirdSignal);
+      assert.strictEqual(firstSignal, 1); // StrongBuy
+    });
+  });
+
+  describe("Phase 2 - Final State Verification", () => {
+    const STRATEGY_CONFIG_SEED = Buffer.from("strategy_config");
+    let strategyConfigPda: PublicKey;
+
+    before(async () => {
+      [strategyConfigPda] = PublicKey.findProgramAddressSync(
+        [STRATEGY_CONFIG_SEED, vaultPda.toBuffer()],
+        program.programId
+      );
+    });
+
+    it("should have consistent Phase 2 state", async () => {
+      const vault = await program.account.spectreVault.fetch(vaultPda);
+      const config = await program.account.strategyConfig.fetch(strategyConfigPda);
+
+      console.log("\nPhase 2 Final State:");
+      console.log("  Vault delegated:", vault.isDelegated);
+      console.log("  Model hash (first 8 bytes):", vault.modelHash.slice(0, 8));
+      console.log("  Strategy active:", config.isActive);
+      console.log("  Total signals generated:", config.totalSignals.toNumber());
+      console.log("  Last signal:", config.lastSignal);
+      console.log("  Price thresholds:", config.priceThresholdLow, "-", config.priceThresholdHigh);
+      console.log("  Volatility cap:", config.volatilityCap);
+
+      // Verify invariants
+      assert.strictEqual(config.vault.toString(), vaultPda.toString());
+      assert.strictEqual(config.authority.toString(), authority.publicKey.toString());
+      assert.ok(config.totalSignals.toNumber() > 0);
+      assert.ok(config.priceThresholdLow < config.priceThresholdHigh);
+    });
+  });
 });

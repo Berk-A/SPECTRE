@@ -13,9 +13,14 @@ pub const VAULT_SEED: &[u8] = b"spectre_vault";
 pub const DEPOSIT_SEED: &[u8] = b"user_deposit";
 pub const WITHDRAWAL_SEED: &[u8] = b"withdrawal";
 pub const POSITION_SEED: &[u8] = b"position";
+pub const STRATEGY_CONFIG_SEED: &[u8] = b"strategy_config";
 
 /// Maximum number of active positions per vault
 pub const MAX_POSITIONS: usize = 100;
+
+/// Delegation program ID for MagicBlock TEE (placeholder)
+/// In production, this would be the actual delegation program
+pub const DELEGATION_PROGRAM_ID: &str = "DELegateXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
 
 /// Main vault account that holds shielded funds and manages trading state
 #[account]
@@ -79,6 +84,61 @@ impl SpectreVault {
             base_size
         }
     }
+
+    /// Check if vault can be delegated
+    pub fn can_delegate(&self) -> bool {
+        self.is_active && !self.is_delegated
+    }
+
+    /// Check if vault can be undelegated
+    pub fn can_undelegate(&self) -> bool {
+        self.is_active && self.is_delegated
+    }
+}
+
+/// Strategy configuration stored on-chain
+/// Allows updating strategy parameters without recompiling
+#[account]
+#[derive(InitSpace)]
+pub struct StrategyConfig {
+    /// Associated vault
+    pub vault: Pubkey,
+
+    /// Authority that can update strategy params
+    pub authority: Pubkey,
+
+    /// Price threshold below which we consider buying (scaled by 1000)
+    pub price_threshold_low: u32,
+
+    /// Price threshold above which we consider selling (scaled by 1000)
+    pub price_threshold_high: u32,
+
+    /// Minimum trend magnitude for strong signals (scaled by 1000)
+    pub trend_threshold: u32,
+
+    /// Maximum volatility above which we hold (scaled by 1000)
+    pub volatility_cap: u32,
+
+    /// Whether the strategy is active
+    pub is_active: bool,
+
+    /// Last time parameters were updated
+    pub updated_at: i64,
+
+    /// Last signal generated (for logging/monitoring)
+    pub last_signal: u8,
+
+    /// Last signal timestamp
+    pub last_signal_at: i64,
+
+    /// Total signals generated
+    pub total_signals: u64,
+
+    /// Bump seed
+    pub bump: u8,
+
+    /// Reserved for future use
+    pub _reserved: [u8; 32],
 }
 
 /// Individual user deposit with ZK commitment
@@ -294,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_vault_has_sufficient_balance() {
-        let mut vault = SpectreVault {
+        let vault = SpectreVault {
             authority: Pubkey::default(),
             vault_bump: 0,
             vault_sol_bump: 0,

@@ -18,18 +18,23 @@ idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 anchor-debug = []
 custom-heap = []
 custom-panic = []
-# Strategy features
+# Strategy features - Phase 2
 decision-tree = []
-# onnx = ["tract-onnx"]  # Phase 2: Enable when tract-onnx is added
+# onnx = ["tract-onnx"]  # Stretch goal: ONNX inference
+# TEE features - Phase 2 (uncomment when using actual TEE)
+# tee = ["ephemeral-rollups-sdk"]
 # Mock features for testing
 mock-privacy-cash = []
 mock-pnp = []
+mock-tee = []  # For local testing without actual TEE
 
 [dependencies]
 anchor-lang = "0.32.1"
 anchor-spl = "0.32.1"
-# ephemeral-rollups-sdk = "0.1"  # Phase 2: TEE integration
-# tract-onnx = { version = "0.22", optional = true }  # Phase 2: ONNX inference
+# Phase 2: TEE integration - uncomment when using actual TEE devnet
+# ephemeral-rollups-sdk = { version = "0.1", optional = true }
+# Phase 2: ONNX inference (stretch goal)
+# tract-onnx = { version = "0.22", optional = true }
 
 [dev-dependencies]
 # solana-program-test = "1.18"

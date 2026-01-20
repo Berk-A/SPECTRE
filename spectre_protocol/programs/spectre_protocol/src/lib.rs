@@ -31,9 +31,11 @@ use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
 pub mod state;
+pub mod strategy;
 pub mod utils;
 
 use state::*;
+use strategy::{TradeSignal, StrategyParams, MarketInput, run_inference};
 use utils::privacy_bridge::{ZkProof, verify_deposit_proof, DepositError};
 use utils::compliance::{RangeAttestation, verify_compliance};
 
@@ -284,6 +286,186 @@ pub mod spectre_protocol {
 
         Ok(())
     }
+
+    // ============================================
+    // LAYER 2: THE BRAIN - TEE & Strategy Instructions
+    // ============================================
+
+    /// Initialize strategy configuration for a vault
+    pub fn initialize_strategy(
+        ctx: Context<InitializeStrategy>,
+        params: Option<StrategyParams>,
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+        let config = &mut ctx.accounts.strategy_config;
+        let params = params.unwrap_or_default();
+
+        // Validate params
+        require!(params.validate(), SpectreError::InvalidStrategyParams);
+
+        config.vault = ctx.accounts.vault.key();
+        config.authority = ctx.accounts.authority.key();
+        config.price_threshold_low = params.price_threshold_low;
+        config.price_threshold_high = params.price_threshold_high;
+        config.trend_threshold = params.trend_threshold;
+        config.volatility_cap = params.volatility_cap;
+        config.is_active = true;
+        config.updated_at = clock.unix_timestamp;
+        config.last_signal = 0;
+        config.last_signal_at = 0;
+        config.total_signals = 0;
+        config.bump = ctx.bumps.strategy_config;
+        config._reserved = [0u8; 32];
+
+        msg!("Strategy initialized for vault");
+        msg!("  Price thresholds: {} - {}", params.price_threshold_low, params.price_threshold_high);
+        msg!("  Volatility cap: {}", params.volatility_cap);
+
+        Ok(())
+    }
+
+    /// Delegate vault to TEE enclave for private execution
+    ///
+    /// In production with MagicBlock:
+    /// - Calls ephemeral_rollups_sdk::cpi::delegate_account
+    /// - Vault state becomes encrypted in TEE memory
+    /// - Only the TEE can modify vault state until undelegation
+    pub fn delegate_to_tee(ctx: Context<DelegateToTee>) -> Result<()> {
+        let vault = &mut ctx.accounts.vault;
+
+        // Check vault can be delegated
+        require!(vault.can_delegate(), SpectreError::VaultAlreadyDelegated);
+
+        // In production, this would call MagicBlock's delegation CPI:
+        // ephemeral_rollups_sdk::cpi::delegate_account(
+        //     &ctx.accounts.authority,
+        //     &vault.to_account_info(),
+        //     &ctx.program_id,
+        //     &[VAULT_SEED, ctx.accounts.authority.key().as_ref()],
+        //     0,  // No time limit
+        //     1,  // Update frequency
+        // )?;
+
+        vault.is_delegated = true;
+
+        msg!("Vault delegated to TEE enclave");
+        msg!("  Vault: {}", ctx.accounts.vault.key());
+        msg!("  Authority: {}", ctx.accounts.authority.key());
+
+        Ok(())
+    }
+
+    /// Undelegate vault from TEE enclave
+    ///
+    /// Returns vault control to L1 Solana.
+    /// In production, state changes are committed to L1.
+    pub fn undelegate_from_tee(ctx: Context<UndelegateFromTee>) -> Result<()> {
+        let vault = &mut ctx.accounts.vault;
+
+        // Check vault is delegated
+        require!(vault.can_undelegate(), SpectreError::VaultNotDelegated);
+
+        // In production, this would call MagicBlock's undelegation CPI:
+        // ephemeral_rollups_sdk::cpi::undelegate_account(
+        //     &ctx.accounts.authority,
+        //     &vault.to_account_info(),
+        //     &ctx.program_id,
+        // )?;
+
+        vault.is_delegated = false;
+
+        msg!("Vault undelegated from TEE enclave");
+        msg!("  Vault: {}", ctx.accounts.vault.key());
+
+        Ok(())
+    }
+
+    /// Update the trading model hash (admin only)
+    ///
+    /// The model hash is used for attestation - proving which
+    /// model version generated trading signals.
+    pub fn update_model(
+        ctx: Context<UpdateModel>,
+        model_hash: [u8; 32],
+    ) -> Result<()> {
+        let vault = &mut ctx.accounts.vault;
+
+        // Update model hash
+        vault.model_hash = model_hash;
+
+        msg!("Model hash updated");
+        msg!("  New hash: {:?}", &model_hash[..8]); // First 8 bytes for logging
+
+        Ok(())
+    }
+
+    /// Update strategy parameters
+    pub fn set_strategy_params(
+        ctx: Context<SetStrategyParams>,
+        params: StrategyParams,
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+
+        // Validate params
+        require!(params.validate(), SpectreError::InvalidStrategyParams);
+
+        let config = &mut ctx.accounts.strategy_config;
+
+        config.price_threshold_low = params.price_threshold_low;
+        config.price_threshold_high = params.price_threshold_high;
+        config.trend_threshold = params.trend_threshold;
+        config.volatility_cap = params.volatility_cap;
+        config.updated_at = clock.unix_timestamp;
+
+        msg!("Strategy parameters updated");
+        msg!("  Price thresholds: {} - {}", params.price_threshold_low, params.price_threshold_high);
+        msg!("  Trend threshold: {}", params.trend_threshold);
+        msg!("  Volatility cap: {}", params.volatility_cap);
+
+        Ok(())
+    }
+
+    /// Generate a trade signal from market data
+    ///
+    /// This runs the decision tree inference inside the TEE (when delegated).
+    /// The signal is logged and stored, but execution happens separately.
+    pub fn generate_trade_signal(
+        ctx: Context<GenerateTradeSignal>,
+        input: MarketInput,
+    ) -> Result<TradeSignal> {
+        let clock = Clock::get()?;
+        let config = &mut ctx.accounts.strategy_config;
+        let vault = &ctx.accounts.vault;
+
+        // Build strategy params from config
+        let params = StrategyParams::new(
+            config.price_threshold_low,
+            config.price_threshold_high,
+            config.trend_threshold,
+            config.volatility_cap,
+        );
+
+        // Run inference
+        let signal = run_inference(&input, &params);
+
+        // Update stats
+        config.last_signal = match signal {
+            TradeSignal::StrongBuy => 1,
+            TradeSignal::Buy => 2,
+            TradeSignal::Hold => 3,
+            TradeSignal::Sell => 4,
+            TradeSignal::StrongSell => 5,
+        };
+        config.last_signal_at = clock.unix_timestamp;
+        config.total_signals = config.total_signals.saturating_add(1);
+
+        msg!("Trade signal generated");
+        msg!("  Signal: {:?}", signal);
+        msg!("  Vault delegated: {}", vault.is_delegated);
+        msg!("  Input: price={}, trend={}, vol={}", input.price, input.trend, input.volatility);
+
+        Ok(signal)
+    }
 }
 
 // ============================================
@@ -464,11 +646,145 @@ pub struct VerifyWithdrawalCompliance<'info> {
 }
 
 // ============================================
+// Phase 2: TEE & Strategy Account Contexts
+// ============================================
+
+/// Accounts for initializing strategy configuration
+#[derive(Accounts)]
+pub struct InitializeStrategy<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        seeds = [VAULT_SEED, authority.key().as_ref()],
+        bump = vault.vault_bump,
+        constraint = vault.authority == authority.key() @ SpectreError::Unauthorized
+    )]
+    pub vault: Account<'info, SpectreVault>,
+
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + StrategyConfig::INIT_SPACE,
+        seeds = [STRATEGY_CONFIG_SEED, vault.key().as_ref()],
+        bump
+    )]
+    pub strategy_config: Account<'info, StrategyConfig>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Accounts for delegating vault to TEE
+#[derive(Accounts)]
+pub struct DelegateToTee<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, authority.key().as_ref()],
+        bump = vault.vault_bump,
+        constraint = vault.authority == authority.key() @ SpectreError::Unauthorized,
+        constraint = vault.is_active @ SpectreError::VaultInactive,
+        constraint = !vault.is_delegated @ SpectreError::VaultAlreadyDelegated
+    )]
+    pub vault: Account<'info, SpectreVault>,
+
+    /// CHECK: MagicBlock delegation program (not validated in mock mode)
+    pub delegation_program: Option<AccountInfo<'info>>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Accounts for undelegating vault from TEE
+#[derive(Accounts)]
+pub struct UndelegateFromTee<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, authority.key().as_ref()],
+        bump = vault.vault_bump,
+        constraint = vault.authority == authority.key() @ SpectreError::Unauthorized,
+        constraint = vault.is_delegated @ SpectreError::VaultNotDelegated
+    )]
+    pub vault: Account<'info, SpectreVault>,
+
+    /// CHECK: MagicBlock delegation program (not validated in mock mode)
+    pub delegation_program: Option<AccountInfo<'info>>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Accounts for updating model hash
+#[derive(Accounts)]
+pub struct UpdateModel<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, authority.key().as_ref()],
+        bump = vault.vault_bump,
+        constraint = vault.authority == authority.key() @ SpectreError::Unauthorized
+    )]
+    pub vault: Account<'info, SpectreVault>,
+}
+
+/// Accounts for updating strategy parameters
+#[derive(Accounts)]
+pub struct SetStrategyParams<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        seeds = [VAULT_SEED, authority.key().as_ref()],
+        bump = vault.vault_bump,
+        constraint = vault.authority == authority.key() @ SpectreError::Unauthorized
+    )]
+    pub vault: Account<'info, SpectreVault>,
+
+    #[account(
+        mut,
+        seeds = [STRATEGY_CONFIG_SEED, vault.key().as_ref()],
+        bump = strategy_config.bump,
+        constraint = strategy_config.authority == authority.key() @ SpectreError::Unauthorized
+    )]
+    pub strategy_config: Account<'info, StrategyConfig>,
+}
+
+/// Accounts for generating trade signal
+#[derive(Accounts)]
+pub struct GenerateTradeSignal<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        seeds = [VAULT_SEED, vault.authority.as_ref()],
+        bump = vault.vault_bump,
+        constraint = vault.is_active @ SpectreError::VaultInactive
+    )]
+    pub vault: Account<'info, SpectreVault>,
+
+    #[account(
+        mut,
+        seeds = [STRATEGY_CONFIG_SEED, vault.key().as_ref()],
+        bump = strategy_config.bump,
+        constraint = strategy_config.is_active @ SpectreError::StrategyNotActive
+    )]
+    pub strategy_config: Account<'info, StrategyConfig>,
+}
+
+// ============================================
 // Error Definitions
 // ============================================
 
 #[error_code]
 pub enum SpectreError {
+    // ============================================
+    // Vault Errors
+    // ============================================
     #[msg("Vault is not currently active")]
     VaultInactive,
 
@@ -481,6 +797,9 @@ pub enum SpectreError {
     #[msg("Insufficient balance in vault")]
     InsufficientVaultBalance,
 
+    // ============================================
+    // Deposit Errors
+    // ============================================
     #[msg("Deposit amount is below minimum")]
     DepositTooLow,
 
@@ -502,6 +821,9 @@ pub enum SpectreError {
     #[msg("Deposit is not active")]
     DepositNotActive,
 
+    // ============================================
+    // Withdrawal Errors
+    // ============================================
     #[msg("Not authorized to withdraw from this deposit")]
     UnauthorizedWithdrawal,
 
@@ -517,6 +839,9 @@ pub enum SpectreError {
     #[msg("Recipient does not match withdrawal request")]
     RecipientMismatch,
 
+    // ============================================
+    // Compliance Errors
+    // ============================================
     #[msg("Compliance check failed - address may be high risk")]
     ComplianceCheckFailed,
 
@@ -529,6 +854,9 @@ pub enum SpectreError {
     #[msg("Invalid oracle signature on attestation")]
     InvalidOracleSignature,
 
+    // ============================================
+    // Trading Errors
+    // ============================================
     #[msg("Position not found")]
     PositionNotFound,
 
@@ -541,6 +869,27 @@ pub enum SpectreError {
     #[msg("Market not found")]
     MarketNotFound,
 
+    // ============================================
+    // Strategy Errors (Phase 2)
+    // ============================================
+    #[msg("Invalid strategy parameters")]
+    InvalidStrategyParams,
+
+    #[msg("Strategy is not active")]
+    StrategyNotActive,
+
+    #[msg("Invalid market input data")]
+    InvalidMarketInput,
+
+    // ============================================
+    // Authorization Errors
+    // ============================================
+    #[msg("Not authorized to perform this action")]
+    Unauthorized,
+
+    // ============================================
+    // Math Errors
+    // ============================================
     #[msg("Mathematical overflow occurred")]
     MathOverflow,
 
