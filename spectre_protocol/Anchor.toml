@@ -16,7 +16,7 @@ spectre_protocol = "B2at4oGQFPAbuH2wMMpBsFrTvJi71GUvR7jyxny7HaGf"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
