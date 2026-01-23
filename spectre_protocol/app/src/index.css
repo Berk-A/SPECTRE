@@ -1,0 +1,203 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 10 10 15;
+    --foreground: 255 255 255;
+    --neon-cyan: 0 245 255;
+    --neon-purple: 191 0 255;
+    --neon-green: 57 255 20;
+  }
+
+  * {
+    @apply border-glass-border;
+  }
+
+  body {
+    @apply bg-background text-white;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-background-secondary;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-neon-cyan/20 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-neon-cyan/40;
+  }
+}
+
+@layer components {
+  /* Glass card effect */
+  .glass-card {
+    @apply bg-glass-bg backdrop-blur-xl border border-glass-border rounded-xl;
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  }
+
+  /* Neon text glow */
+  .text-glow-cyan {
+    text-shadow: 0 0 10px rgba(0, 245, 255, 0.5), 0 0 20px rgba(0, 245, 255, 0.3);
+  }
+
+  .text-glow-purple {
+    text-shadow: 0 0 10px rgba(191, 0, 255, 0.5), 0 0 20px rgba(191, 0, 255, 0.3);
+  }
+
+  .text-glow-green {
+    text-shadow: 0 0 10px rgba(57, 255, 20, 0.5), 0 0 20px rgba(57, 255, 20, 0.3);
+  }
+
+  /* Neon border glow */
+  .border-glow-cyan {
+    box-shadow: 0 0 5px rgba(0, 245, 255, 0.5), inset 0 0 5px rgba(0, 245, 255, 0.1);
+  }
+
+  .border-glow-purple {
+    box-shadow: 0 0 5px rgba(191, 0, 255, 0.5), inset 0 0 5px rgba(191, 0, 255, 0.1);
+  }
+
+  .border-glow-green {
+    box-shadow: 0 0 5px rgba(57, 255, 20, 0.5), inset 0 0 5px rgba(57, 255, 20, 0.1);
+  }
+
+  /* Grid background pattern */
+  .grid-bg {
+    @apply bg-grid-pattern bg-grid;
+  }
+
+  /* Pulse animation */
+  .pulse-neon {
+    animation: pulse-neon 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-neon {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
+  }
+
+  /* Scan line effect */
+  .scan-line {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .scan-line::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(0, 245, 255, 0.5), transparent);
+    animation: scan 8s linear infinite;
+  }
+
+  @keyframes scan {
+    0% {
+      top: -10%;
+    }
+    100% {
+      top: 110%;
+    }
+  }
+
+  /* Shimmer loading effect */
+  .shimmer {
+    @apply relative overflow-hidden;
+  }
+
+  .shimmer::after {
+    content: '';
+    @apply absolute inset-0;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.05),
+      transparent
+    );
+    animation: shimmer 2s infinite;
+  }
+
+  @keyframes shimmer {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(100%);
+    }
+  }
+}
+
+@layer utilities {
+  /* Hide scrollbar but keep functionality */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Gradient text */
+  .gradient-text {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, #00f5ff 0%, #bf00ff 100%);
+  }
+
+  /* Animated gradient background */
+  .animated-gradient {
+    background: linear-gradient(-45deg, #0a0a0f, #12121a, #1a1a24, #12121a);
+    background-size: 400% 400%;
+    animation: gradient 15s ease infinite;
+  }
+
+  @keyframes gradient {
+    0% {
+      background-position: 0% 50%;
+    }
+    50% {
+      background-position: 100% 50%;
+    }
+    100% {
+      background-position: 0% 50%;
+    }
+  }
+}
+
+/* Solana wallet adapter style overrides */
+.wallet-adapter-button {
+  @apply !bg-neon-cyan/10 !border !border-neon-cyan/30 !rounded-lg hover:!bg-neon-cyan/20 !transition-all;
+}
+
+.wallet-adapter-button:hover {
+  @apply !shadow-neon-cyan;
+}
+
+.wallet-adapter-modal-wrapper {
+  @apply !bg-background-secondary !border !border-glass-border !rounded-2xl;
+}
+
+.wallet-adapter-modal-title {
+  @apply !text-white;
+}
+
+.wallet-adapter-modal-list li {
+  @apply !bg-background hover:!bg-neon-cyan/10 !rounded-lg !transition-all;
+}
