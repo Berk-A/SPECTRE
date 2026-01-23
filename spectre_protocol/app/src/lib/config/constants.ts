@@ -41,7 +41,7 @@ export const MIN_DEPOSIT_SOL = 0.001
 export const MAX_DEPOSIT_SOL = 1000
 
 // Demo mode
-export const DEMO_MODE = true
+export const DEMO_MODE = false
 
 // Layer labels
 export const LAYERS = {
