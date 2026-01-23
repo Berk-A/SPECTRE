@@ -162,3 +162,50 @@ export {
   DEFAULT_SELECTION_CRITERIA,
   DEFAULT_PNP_CONFIG,
 } from './pnp';
+
+// ============================================
+// PrivacyCash Exports
+// ============================================
+
+export {
+  // Client
+  SpectrePrivacyClient,
+  createPrivacyClientFromEnv,
+  createReadOnlyPrivacyClient,
+  // Types
+  DepositNote,
+  ShieldResult,
+  UnshieldResult,
+  ShieldedBalance,
+  NoteDelegation,
+  PrivacyClientConfig,
+  ShieldedTokenType,
+  // Note management functions
+  createDepositNote,
+  serializeNote,
+  deserializeNote,
+  validateNote,
+  encryptNote,
+  decryptNote,
+  generateCommitment,
+  generateNullifierHash,
+  generateRandomBytes,
+  // Validation functions
+  validateShieldAmount,
+  formatAmount,
+  // Formatting functions
+  formatShieldResult,
+  formatUnshieldResult,
+  // Constants
+  PRIVACY_CASH_PROGRAM_ID,
+  USDC_MAINNET,
+  USDC_DEVNET,
+  MIN_DEPOSIT_SOL,
+  MAX_DEPOSIT_SOL,
+  MIN_DEPOSIT_LAMPORTS,
+  MAX_DEPOSIT_LAMPORTS,
+  NOTE_KEY_SIZE,
+  COMMITMENT_SIZE,
+  NULLIFIER_SIZE,
+  DEFAULT_PRIVACY_CONFIG,
+} from './privacy';
