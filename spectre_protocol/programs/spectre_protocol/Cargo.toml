@@ -20,9 +20,8 @@ custom-heap = []
 custom-panic = []
 # Strategy features - Phase 2
 decision-tree = []
-# onnx = ["tract-onnx"]  # Stretch goal: ONNX inference
-# TEE features - Phase 2 (uncomment when using actual TEE)
-# tee = ["ephemeral-rollups-sdk"]
+# TEE features - MagicBlock Ephemeral Rollups
+tee = []
 # Mock features for testing
 mock-privacy-cash = []
 mock-pnp = []
@@ -31,10 +30,8 @@ mock-tee = []  # For local testing without actual TEE
 [dependencies]
 anchor-lang = "0.32.1"
 anchor-spl = "0.32.1"
-# Phase 2: TEE integration - uncomment when using actual TEE devnet
-# ephemeral-rollups-sdk = { version = "0.1", optional = true }
-# Phase 2: ONNX inference (stretch goal)
-# tract-onnx = { version = "0.22", optional = true }
+# MagicBlock Ephemeral Rollups SDK for TEE delegation
+ephemeral-rollups-sdk = { version = "0.8", features = ["anchor"] }
 
 [dev-dependencies]
 # solana-program-test = "1.18"

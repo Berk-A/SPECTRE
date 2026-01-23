@@ -30,6 +30,16 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
+// MagicBlock Ephemeral Rollups SDK for TEE delegation
+use ephemeral_rollups_sdk::cpi::{delegate_account, DelegateAccounts, DelegateConfig};
+use ephemeral_rollups_sdk::consts::DELEGATION_PROGRAM_ID;
+use ephemeral_rollups_sdk::pda::{
+    delegate_buffer_pda_from_delegated_account_and_owner_program,
+    delegation_record_pda_from_delegated_account,
+    delegation_metadata_pda_from_delegated_account,
+};
+use ephemeral_rollups_sdk::ephem::commit_and_undelegate_accounts;
+
 pub mod cpi;
 pub mod state;
 pub mod strategy;
@@ -328,56 +338,92 @@ pub mod spectre_protocol {
 
     /// Delegate vault to TEE enclave for private execution
     ///
-    /// In production with MagicBlock:
-    /// - Calls ephemeral_rollups_sdk::cpi::delegate_account
-    /// - Vault state becomes encrypted in TEE memory
+    /// This instruction delegates the vault account to MagicBlock's TEE:
+    /// - Transfers account ownership to the delegation program
+    /// - State becomes encrypted and processed in TEE memory
     /// - Only the TEE can modify vault state until undelegation
+    /// - Strategy execution happens privately within the enclave
     pub fn delegate_to_tee(ctx: Context<DelegateToTee>) -> Result<()> {
-        let vault = &mut ctx.accounts.vault;
-
         // Check vault can be delegated
-        require!(vault.can_delegate(), SpectreError::VaultAlreadyDelegated);
+        require!(ctx.accounts.vault.can_delegate(), SpectreError::VaultAlreadyDelegated);
 
-        // In production, this would call MagicBlock's delegation CPI:
-        // ephemeral_rollups_sdk::cpi::delegate_account(
-        //     &ctx.accounts.authority,
-        //     &vault.to_account_info(),
-        //     &ctx.program_id,
-        //     &[VAULT_SEED, ctx.accounts.authority.key().as_ref()],
-        //     0,  // No time limit
-        //     1,  // Update frequency
-        // )?;
+        // Store values for logging and seed construction
+        let vault_key = ctx.accounts.vault.key();
+        let payer_key = ctx.accounts.payer.key();
 
-        vault.is_delegated = true;
+        // Build the vault PDA seeds for signing
+        let vault_seeds: &[&[u8]] = &[
+            VAULT_SEED,
+            payer_key.as_ref(),
+        ];
 
-        msg!("Vault delegated to TEE enclave");
-        msg!("  Vault: {}", ctx.accounts.vault.key());
-        msg!("  Authority: {}", ctx.accounts.authority.key());
+        // Get all account infos upfront
+        let payer_info = ctx.accounts.payer.to_account_info();
+        let vault_info = ctx.accounts.vault.to_account_info();
+        let owner_program_info = ctx.accounts.owner_program.to_account_info();
+        let buffer_info = ctx.accounts.buffer.to_account_info();
+        let delegation_record_info = ctx.accounts.delegation_record.to_account_info();
+        let delegation_metadata_info = ctx.accounts.delegation_metadata.to_account_info();
+        let delegation_program_info = ctx.accounts.delegation_program.to_account_info();
+        let system_program_info = ctx.accounts.system_program.to_account_info();
+
+        // Create DelegateAccounts struct
+        let delegate_accounts = DelegateAccounts {
+            payer: &payer_info,
+            pda: &vault_info,
+            owner_program: &owner_program_info,
+            buffer: &buffer_info,
+            delegation_record: &delegation_record_info,
+            delegation_metadata: &delegation_metadata_info,
+            delegation_program: &delegation_program_info,
+            system_program: &system_program_info,
+        };
+
+        // Configure delegation settings
+        let config = DelegateConfig {
+            commit_frequency_ms: 3000,
+            validator: ctx.remaining_accounts.first().map(|a| *a.key),
+        };
+
+        // Execute the delegation CPI
+        delegate_account(delegate_accounts, vault_seeds, config)
+            .map_err(|_| SpectreError::DelegationFailed)?;
+
+        msg!("🔒 Vault successfully delegated to MagicBlock TEE enclave");
+        msg!("  Vault: {}", vault_key);
+        msg!("  Authority: {}", payer_key);
 
         Ok(())
     }
 
     /// Undelegate vault from TEE enclave
     ///
-    /// Returns vault control to L1 Solana.
-    /// In production, state changes are committed to L1.
+    /// This instruction returns vault control from the TEE back to L1 Solana:
+    /// - Commits all pending state changes to the base layer
+    /// - Transfers account ownership back to this program
+    /// - State becomes publicly visible again on L1
+    /// - Trading strategy execution resumes on mainnet
+    /// Undelegate vault from TEE enclave
+    ///
+    /// IMPORTANT: This instruction must be called from the TEE devnet endpoint,
+    /// not from L1 Solana devnet. During delegation, the vault is owned by
+    /// the delegation program and cannot be accessed from L1.
     pub fn undelegate_from_tee(ctx: Context<UndelegateFromTee>) -> Result<()> {
-        let vault = &mut ctx.accounts.vault;
+        let vault_key = ctx.accounts.vault.key();
 
-        // Check vault is delegated
-        require!(vault.can_undelegate(), SpectreError::VaultNotDelegated);
+        // Use the SDK's commit_and_undelegate function
+        // This commits final state and returns ownership to this program
+        // Note: vault is an AccountInfo since it's owned by delegation program during delegation
+        commit_and_undelegate_accounts(
+            &ctx.accounts.payer.to_account_info(),
+            vec![&ctx.accounts.vault],
+            &ctx.accounts.magic_context,
+            &ctx.accounts.magic_program,
+        ).map_err(|_| SpectreError::UndelegationFailed)?;
 
-        // In production, this would call MagicBlock's undelegation CPI:
-        // ephemeral_rollups_sdk::cpi::undelegate_account(
-        //     &ctx.accounts.authority,
-        //     &vault.to_account_info(),
-        //     &ctx.program_id,
-        // )?;
-
-        vault.is_delegated = false;
-
-        msg!("Vault undelegated from TEE enclave");
-        msg!("  Vault: {}", ctx.accounts.vault.key());
+        msg!("🔓 Vault undelegated from MagicBlock TEE enclave");
+        msg!("  Vault: {}", vault_key);
+        msg!("  State committed to L1 Solana");
 
         Ok(())
     }
@@ -922,46 +968,96 @@ pub struct InitializeStrategy<'info> {
 }
 
 /// Accounts for delegating vault to TEE
+///
+/// This context includes all accounts required by MagicBlock's delegation program:
+/// - The vault PDA to be delegated
+/// - A buffer account to temporarily hold the vault data
+/// - Delegation record and metadata PDAs
+/// - The delegation program and system program
+/// Accounts for delegating vault to TEE
+///
+/// This context includes all accounts required by MagicBlock's delegation program:
+/// - The vault PDA to be delegated
+/// - A buffer account to temporarily hold the vault data
+/// - Delegation record and metadata PDAs
+/// - The delegation program and system program
 #[derive(Accounts)]
 pub struct DelegateToTee<'info> {
+    /// The payer who pays for delegation account rent
     #[account(mut)]
-    pub authority: Signer<'info>,
+    pub payer: Signer<'info>,
 
+    /// The vault account to be delegated to the TEE
     #[account(
         mut,
-        seeds = [VAULT_SEED, authority.key().as_ref()],
+        seeds = [VAULT_SEED, payer.key().as_ref()],
         bump = vault.vault_bump,
-        constraint = vault.authority == authority.key() @ SpectreError::Unauthorized,
+        constraint = vault.authority == payer.key() @ SpectreError::Unauthorized,
         constraint = vault.is_active @ SpectreError::VaultInactive,
         constraint = !vault.is_delegated @ SpectreError::VaultAlreadyDelegated
     )]
     pub vault: Account<'info, SpectreVault>,
 
-    /// CHECK: MagicBlock delegation program (not validated in mock mode)
-    pub delegation_program: Option<AccountInfo<'info>>,
+    /// CHECK: This program - owner of the vault PDA
+    #[account(address = crate::ID)]
+    pub owner_program: AccountInfo<'info>,
+
+    /// CHECK: Buffer account for temporary data storage during delegation.
+    /// PDA derived by delegation program. Validation handled by delegation program via CPI.
+    #[account(mut)]
+    pub buffer: AccountInfo<'info>,
+
+    /// CHECK: Delegation record PDA - tracks delegation status.
+    /// PDA derived by delegation program. Validation handled by delegation program via CPI.
+    #[account(mut)]
+    pub delegation_record: AccountInfo<'info>,
+
+    /// CHECK: Delegation metadata PDA - stores delegation configuration.
+    /// PDA derived by delegation program. Validation handled by delegation program via CPI.
+    #[account(mut)]
+    pub delegation_metadata: AccountInfo<'info>,
+
+    /// CHECK: MagicBlock delegation program
+    #[account(address = DELEGATION_PROGRAM_ID)]
+    pub delegation_program: AccountInfo<'info>,
 
     pub system_program: Program<'info, System>,
 }
 
 /// Accounts for undelegating vault from TEE
+///
+/// This context includes all accounts required to return vault control from TEE to L1.
+/// Uses the SDK's commit_and_undelegate_accounts function.
+///
+/// IMPORTANT: This instruction must be called from the TEE devnet, not from L1.
+/// During delegation, the vault is owned by the delegation program, so we cannot
+/// deserialize it as a SPECTRE account. The vault is passed as an unchecked account.
 #[derive(Accounts)]
 pub struct UndelegateFromTee<'info> {
+    /// The payer who pays for undelegation
     #[account(mut)]
-    pub authority: Signer<'info>,
+    pub payer: Signer<'info>,
 
+    /// CHECK: The vault account currently delegated to the TEE.
+    /// During delegation, this account is owned by the delegation program,
+    /// so we cannot use Account<'info, SpectreVault> for deserialization.
+    /// We verify it's the correct vault by checking the PDA seeds.
     #[account(
         mut,
-        seeds = [VAULT_SEED, authority.key().as_ref()],
-        bump = vault.vault_bump,
-        constraint = vault.authority == authority.key() @ SpectreError::Unauthorized,
-        constraint = vault.is_delegated @ SpectreError::VaultNotDelegated
+        seeds = [VAULT_SEED, payer.key().as_ref()],
+        bump
     )]
-    pub vault: Account<'info, SpectreVault>,
+    pub vault: AccountInfo<'info>,
 
-    /// CHECK: MagicBlock delegation program (not validated in mock mode)
-    pub delegation_program: Option<AccountInfo<'info>>,
+    /// CHECK: Magic context account - required for commit/undelegate
+    /// This is MagicContext1111111111111111111111111111111
+    /// Must be mutable as the magic program writes scheduling info to it
+    #[account(mut)]
+    pub magic_context: AccountInfo<'info>,
 
-    pub system_program: Program<'info, System>,
+    /// CHECK: Magic program - required for commit/undelegate
+    /// This is Magic11111111111111111111111111111111111111
+    pub magic_program: AccountInfo<'info>,
 }
 
 /// Accounts for updating model hash
@@ -1143,6 +1239,12 @@ pub enum SpectreError {
 
     #[msg("Vault is already delegated to TEE")]
     VaultAlreadyDelegated,
+
+    #[msg("Failed to delegate vault to TEE enclave")]
+    DelegationFailed,
+
+    #[msg("Failed to undelegate vault from TEE enclave")]
+    UndelegationFailed,
 
     #[msg("Insufficient balance in vault")]
     InsufficientVaultBalance,

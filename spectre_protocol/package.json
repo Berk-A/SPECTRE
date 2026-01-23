@@ -5,7 +5,10 @@
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
   },
   "dependencies": {
-    "@coral-xyz/anchor": "^0.32.1"
+    "@coral-xyz/anchor": "^0.32.1",
+    "@magicblock-labs/ephemeral-rollups-sdk": "^0.8.1",
+    "dotenv": "^16.4.5",
+    "pnp-sdk": "^0.2.6"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.0",
