@@ -614,6 +614,26 @@ export class BrowserPrivacyCash {
     }
 
     /**
+     * Compute the empty Merkle tree root using Poseidon hash
+     * This is what the root should be when the tree has no leaves
+     */
+    private computeEmptyMerkleRoot(): string {
+        if (!this.hasher) {
+            throw new Error('Hasher not initialized')
+        }
+
+        // Start with zero element
+        let currentZero = '0'
+
+        // For each level, compute poseidon(zero, zero)
+        for (let i = 0; i < MERKLE_TREE_DEPTH; i++) {
+            currentZero = this.hasher.poseidonHashString([currentZero, currentZero])
+        }
+
+        return currentZero
+    }
+
+    /**
      * Query Merkle tree state from relayer
      * Falls back to mock state if relayer is unavailable (CORS issues)
      */
@@ -624,10 +644,11 @@ export class BrowserPrivacyCash {
             return response.json()
         } catch (error) {
             console.warn('[BrowserPrivacyCash] Relayer unavailable, using mock tree state:', error)
-            // Return a mock tree state for testing
-            // In production, this would need a backend proxy to avoid CORS
+            // Compute the correct empty Merkle root using Poseidon
+            const emptyRoot = this.computeEmptyMerkleRoot()
+            console.log('[BrowserPrivacyCash] Using computed empty root:', emptyRoot)
             return {
-                root: '0', // Empty tree root
+                root: emptyRoot,
                 nextIndex: 0,
             }
         }
