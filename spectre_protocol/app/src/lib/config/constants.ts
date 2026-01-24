@@ -44,9 +44,9 @@ export const MAX_DEPOSIT_SOL = 1000
 // Feature-specific demo modes
 // PNP: Demo mode ON because program pnpxFx... doesn't exist on devnet
 export const PNP_DEMO_MODE = true
-// Privacy: Demo mode ON - Real SDK built but PrivacyCash relayer has CORS/rate limits
-// and circuit input format needs matching. Use demo mode for stable demo experience.
-export const PRIVACY_DEMO_MODE = true
+// Privacy: Demo mode OFF - Real SDK with Poseidon hashing and ZK proofs
+// Uses Vercel serverless proxy to bypass CORS restrictions
+export const PRIVACY_DEMO_MODE = false
 // TEE: Demo mode ON - MagicBlock delegation program may not be on devnet
 export const TEE_DEMO_MODE = true
 

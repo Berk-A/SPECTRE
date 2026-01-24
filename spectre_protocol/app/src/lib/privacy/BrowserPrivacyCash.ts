@@ -432,16 +432,20 @@ export class BrowserPrivacyCash {
 
         // Build inputs (2 required by circuit)
         let inputs: BrowserUtxo[]
-        let inputMerkleIndices: number[]
+        let inputMerklePathIndices: number[][]
         let inputMerklePaths: string[][]
 
         if (existingUtxos.length === 0) {
-            // Fresh deposit: use dummy inputs
+            // Fresh deposit: use dummy inputs with dummy Merkle paths
             inputs = [
                 BrowserUtxo.dummy(keypair, this.hasher!),
                 BrowserUtxo.dummy(keypair, this.hasher!),
             ]
-            inputMerkleIndices = [0, 0]
+            // For dummy inputs, use 20 zeros for path indices (binary path through tree)
+            inputMerklePathIndices = [
+                new Array(20).fill(0),
+                new Array(20).fill(0),
+            ]
             inputMerklePaths = [
                 new Array(20).fill('0'),
                 new Array(20).fill('0'),
@@ -459,10 +463,10 @@ export class BrowserPrivacyCash {
                 inputs.map((utxo) =>
                     utxo.amount > BigInt(0)
                         ? this.fetchMerkleProof(utxo.getCommitment())
-                        : { pathIndices: [0], pathElements: new Array(20).fill('0') }
+                        : { pathIndices: new Array(20).fill(0), pathElements: new Array(20).fill('0') }
                 )
             )
-            inputMerkleIndices = inputs.map((u) => u.index)
+            inputMerklePathIndices = proofs.map((p) => p.pathIndices)
             inputMerklePaths = proofs.map((p) => p.pathElements)
         }
 
@@ -513,7 +517,7 @@ export class BrowserPrivacyCash {
             inAmount: inputs.map((u) => u.amount.toString()),
             inPrivateKey: inputs.map((u) => u.keypair.privkey.toString()),
             inBlinding: inputs.map((u) => u.blinding.toString()),
-            inPathIndices: inputMerkleIndices.map((idx) => idx.toString()),
+            inPathIndices: inputMerklePathIndices.map((indices) => indices.map((idx) => idx.toString())),
             inPathElements: inputMerklePaths.map((path) => path.map((el) => el.toString())),
             outAmount: outputs.map((u) => u.amount.toString()),
             outBlinding: outputs.map((u) => u.blinding.toString()),
@@ -549,7 +553,7 @@ export class BrowserPrivacyCash {
             inputs.map((utxo) =>
                 utxo.amount > BigInt(0)
                     ? this.fetchMerkleProof(utxo.getCommitment())
-                    : { pathIndices: [0], pathElements: new Array(20).fill('0') }
+                    : { pathIndices: new Array(20).fill(0), pathElements: new Array(20).fill('0') }
             )
         )
 
@@ -594,7 +598,7 @@ export class BrowserPrivacyCash {
             inAmount: inputs.map((u) => u.amount.toString()),
             inPrivateKey: inputs.map((u) => u.keypair.privkey),
             inBlinding: inputs.map((u) => u.blinding.toString()),
-            inPathIndices: inputs.map((u) => u.index),
+            inPathIndices: proofs.map((p) => p.pathIndices.map((idx) => idx.toString())),
             inPathElements: proofs.map((p) => p.pathElements),
             outAmount: outputs.map((u) => u.amount.toString()),
             outBlinding: outputs.map((u) => u.blinding.toString()),
