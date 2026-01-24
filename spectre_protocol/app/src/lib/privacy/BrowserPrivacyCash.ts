@@ -86,8 +86,9 @@ export class BrowserPrivacyCash {
 
         onProgress?.('Deriving encryption keys', 10)
 
-        // Derive encryption keys from wallet signature
-        await this.encryptionService.deriveEncryptionKeyFromWallet(this.signMessage)
+        // Derive encryption keys from wallet signature (will restore from storage if available)
+        const walletAddress = this.publicKey.toBase58()
+        await this.encryptionService.deriveEncryptionKeyFromWallet(this.signMessage, walletAddress)
 
         onProgress?.('Loading Poseidon hasher', 30)
 

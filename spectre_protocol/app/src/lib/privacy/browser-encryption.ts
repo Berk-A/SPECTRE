@@ -60,19 +60,90 @@ export interface EncryptionKey {
     v2: Uint8Array
 }
 
+// Storage key for persisted encryption keys
+const ENCRYPTION_KEYS_STORAGE_PREFIX = 'spectre_encryption_keys_'
+
 /**
  * Browser-compatible encryption service for PrivacyCash
+ * 
+ * Persists derived keys to localStorage to avoid repeated signature prompts.
  */
 export class BrowserEncryptionService {
     private encryptionKeyV1: Uint8Array | null = null
     private encryptionKeyV2: Uint8Array | null = null
     private utxoPrivateKeyV1: string | null = null
     private utxoPrivateKeyV2: string | null = null
+    // Note: Keys are persisted to localStorage per-wallet
+
+    /**
+     * Check if keys are already derived and loaded
+     */
+    hasKeys(): boolean {
+        return this.encryptionKeyV2 !== null
+    }
+
+    /**
+     * Try to restore keys from localStorage for a given wallet
+     * Returns true if keys were restored, false if signature is needed
+     */
+    restoreKeysFromStorage(walletAddress: string): boolean {
+        try {
+            const storageKey = ENCRYPTION_KEYS_STORAGE_PREFIX + walletAddress
+            const stored = localStorage.getItem(storageKey)
+            if (!stored) return false
+
+            const parsed = JSON.parse(stored)
+            if (!parsed.v1 || !parsed.v2 || !parsed.utxoV1 || !parsed.utxoV2) return false
+
+            // Restore keys
+            this.encryptionKeyV1 = hexToBytes(parsed.v1)
+            this.encryptionKeyV2 = hexToBytes(parsed.v2)
+            this.utxoPrivateKeyV1 = parsed.utxoV1
+            this.utxoPrivateKeyV2 = parsed.utxoV2
+
+            console.log('[BrowserEncryptionService] Restored keys from storage')
+            return true
+        } catch (error) {
+            console.warn('[BrowserEncryptionService] Failed to restore keys:', error)
+            return false
+        }
+    }
+
+    /**
+     * Persist keys to localStorage for a wallet
+     */
+    private persistKeysToStorage(walletAddress: string): void {
+        try {
+            const storageKey = ENCRYPTION_KEYS_STORAGE_PREFIX + walletAddress
+            const data = {
+                v1: this.encryptionKeyV1 ? bytesToHex(this.encryptionKeyV1) : null,
+                v2: this.encryptionKeyV2 ? bytesToHex(this.encryptionKeyV2) : null,
+                utxoV1: this.utxoPrivateKeyV1,
+                utxoV2: this.utxoPrivateKeyV2,
+            }
+            localStorage.setItem(storageKey, JSON.stringify(data))
+            console.log('[BrowserEncryptionService] Persisted keys to storage')
+        } catch (error) {
+            console.warn('[BrowserEncryptionService] Failed to persist keys:', error)
+        }
+    }
+
+    /**
+     * Clear persisted keys (for sign out)
+     */
+    clearPersistedKeys(walletAddress: string): void {
+        try {
+            const storageKey = ENCRYPTION_KEYS_STORAGE_PREFIX + walletAddress
+            localStorage.removeItem(storageKey)
+        } catch (error) {
+            // Ignore
+        }
+    }
 
     /**
      * Derive encryption keys from a wallet signature
      */
-    deriveEncryptionKeyFromSignature(signature: Uint8Array): EncryptionKey {
+    deriveEncryptionKeyFromSignature(signature: Uint8Array, walletAddress?: string): EncryptionKey {
         // V1: First 31 bytes of signature (legacy)
         const encryptionKeyV1 = signature.slice(0, 31)
         this.encryptionKeyV1 = encryptionKeyV1
@@ -90,6 +161,11 @@ export class BrowserEncryptionService {
         const hashedSeedV2 = hexToBytes(keccak256(encryptionKeyV2))
         this.utxoPrivateKeyV2 = '0x' + bytesToHex(hashedSeedV2)
 
+        // Persist for future sessions
+        if (walletAddress) {
+            this.persistKeysToStorage(walletAddress)
+        }
+
         return {
             v1: this.encryptionKeyV1,
             v2: this.encryptionKeyV2,
@@ -98,13 +174,24 @@ export class BrowserEncryptionService {
 
     /**
      * Derive encryption key from wallet signature (async version using signMessage)
+     * Will try to restore from localStorage first to avoid prompting
      */
     async deriveEncryptionKeyFromWallet(
-        signMessage: (message: Uint8Array) => Promise<Uint8Array>
+        signMessage: (message: Uint8Array) => Promise<Uint8Array>,
+        walletAddress?: string
     ): Promise<EncryptionKey> {
+        // Try to restore from storage first
+        if (walletAddress && this.restoreKeysFromStorage(walletAddress)) {
+            return {
+                v1: this.encryptionKeyV1!,
+                v2: this.encryptionKeyV2!,
+            }
+        }
+
+        // Need to request signature
         const message = new TextEncoder().encode('Privacy Money account sign in')
         const signature = await signMessage(message)
-        return this.deriveEncryptionKeyFromSignature(signature)
+        return this.deriveEncryptionKeyFromSignature(signature, walletAddress)
     }
 
     /**
