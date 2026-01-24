@@ -25,6 +25,9 @@ const FIELD_SIZE = BigInt(
     '21888242871839275222246405745257275088548364400416034343698204186575808495617'
 )
 
+// Merkle tree depth - must match the circuit (26 levels for PrivacyCash)
+const MERKLE_TREE_DEPTH = 26
+
 export interface ShieldResult {
     success: boolean
     txHash?: string
@@ -442,8 +445,8 @@ export class BrowserPrivacyCash {
             ]
             // For dummy inputs, use zero-filled Merkle path elements
             inputMerklePaths = [
-                new Array(20).fill('0'),
-                new Array(20).fill('0'),
+                new Array(MERKLE_TREE_DEPTH).fill('0'),
+                new Array(MERKLE_TREE_DEPTH).fill('0'),
             ]
         } else {
             // Consolidation: use existing UTXOs
@@ -458,7 +461,7 @@ export class BrowserPrivacyCash {
                 inputs.map((utxo) =>
                     utxo.amount > BigInt(0)
                         ? this.fetchMerkleProof(utxo.getCommitment())
-                        : { pathIndices: 0, pathElements: new Array(20).fill('0') }
+                        : { pathIndices: 0, pathElements: new Array(MERKLE_TREE_DEPTH).fill('0') }
                 )
             )
             inputMerklePaths = proofs.map((p) => p.pathElements)
@@ -550,7 +553,7 @@ export class BrowserPrivacyCash {
             inputs.map((utxo) =>
                 utxo.amount > BigInt(0)
                     ? this.fetchMerkleProof(utxo.getCommitment())
-                    : { pathIndices: 0, pathElements: new Array(20).fill('0') }
+                    : { pathIndices: 0, pathElements: new Array(MERKLE_TREE_DEPTH).fill('0') }
             )
         )
 
