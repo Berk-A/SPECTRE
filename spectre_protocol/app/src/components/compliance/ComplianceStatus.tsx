@@ -1,5 +1,4 @@
 import { useWallet } from '@solana/wallet-adapter-react'
-import { motion } from 'framer-motion'
 import { CheckCircle, XCircle, AlertTriangle, RefreshCw } from 'lucide-react'
 import { Button, Card, CardHeader, CardTitle, CardContent, Badge } from '@/components/ui'
 import { useCompliance } from '@/hooks/useCompliance'
@@ -8,7 +7,7 @@ import { RiskScore } from './RiskScore'
 
 export function ComplianceStatus() {
   const { connected, publicKey } = useWallet()
-  const { status, isChecking, checkCompliance, getRiskColor } = useCompliance()
+  const { status, isChecking, checkCompliance } = useCompliance()
 
   return (
     <div className="space-y-4">

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00f5ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#bf00ff;stop-opacity:1" />
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="100" height="100" rx="20" fill="#0a0a0f"/>
+  <g filter="url(#glow)">
+    <!-- Shield shape -->
+    <path d="M50 15 L80 30 L80 55 C80 70 65 82 50 90 C35 82 20 70 20 55 L20 30 Z"
+          fill="none" stroke="url(#gradient)" stroke-width="4"/>
+    <!-- Inner circuit lines -->
+    <path d="M50 30 L50 50 M40 45 L60 45 M35 55 L50 55 L65 55"
+          fill="none" stroke="url(#gradient)" stroke-width="2" stroke-linecap="round"/>
+    <!-- Center dot -->
+    <circle cx="50" cy="50" r="5" fill="#00f5ff"/>
+    <!-- Privacy waves -->
+    <path d="M30 70 Q40 65 50 70 Q60 75 70 70"
+          fill="none" stroke="#bf00ff" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+    <path d="M35 76 Q45 71 50 76 Q55 81 65 76"
+          fill="none" stroke="#bf00ff" stroke-width="2" stroke-linecap="round" opacity="0.4"/>
+  </g>
+</svg>

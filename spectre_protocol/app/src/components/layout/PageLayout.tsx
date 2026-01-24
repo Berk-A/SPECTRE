@@ -8,13 +8,17 @@ export function PageLayout() {
 
   return (
     <div className="flex min-h-screen">
-      {/* Sidebar - hidden on mobile by default */}
+      {/* Sidebar - desktop only */}
       <div className="hidden md:block">
         <Sidebar />
       </div>
 
-      {/* Mobile sidebar */}
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      {/* Mobile sidebar - only render when open */}
+      {sidebarOpen && (
+        <div className="md:hidden">
+          <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+        </div>
+      )}
 
       {/* Main content */}
       <div className="flex flex-1 flex-col">

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { Zap, TrendingUp, TrendingDown } from 'lucide-react'
-import { Button, Card, CardHeader, CardTitle, CardContent, Input, Badge } from '@/components/ui'
+import { Button, Card, CardHeader, CardTitle, CardContent, Input } from '@/components/ui'
 import { usePnp, type TradeSide } from '@/hooks/usePnp'
 import { formatPercent, cn } from '@/lib/utils'
 

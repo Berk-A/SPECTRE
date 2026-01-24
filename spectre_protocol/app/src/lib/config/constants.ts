@@ -40,7 +40,7 @@ export const MIN_LIQUIDITY_USDC = 100
 export const MIN_DEPOSIT_SOL = 0.001
 export const MAX_DEPOSIT_SOL = 1000
 
-// Demo mode
+// Demo mode - set to false for production integrations
 export const DEMO_MODE = true
 
 // Layer labels

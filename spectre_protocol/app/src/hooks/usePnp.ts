@@ -53,9 +53,14 @@ export function usePnp() {
         return DEMO_MARKETS
       }
 
+      if (!pnpClient) {
+        setError('PNP client not initialized')
+        return []
+      }
+
       const fetchedMarkets = await pnpClient.fetchActiveMarkets()
       const normalizedMarkets: Market[] = fetchedMarkets.map((m: any) => ({
-        address: m.address.toBase58(),
+        address: typeof m.address === 'string' ? m.address : m.address.toBase58(),
         question: m.question,
         yesPrice: m.yesPrice,
         noPrice: m.noPrice,
@@ -87,9 +92,24 @@ export function usePnp() {
         return DEMO_POSITIONS
       }
 
+      if (!pnpClient) {
+        return []
+      }
+
       const fetchedPositions = await pnpClient.getPositions()
-      setPositions(fetchedPositions)
-      return fetchedPositions
+      // Map BrowserPnpClient Position type to tradingStore Position type
+      const mappedPositions: Position[] = fetchedPositions.map(p => ({
+        market: p.market,
+        marketQuestion: p.question,
+        yesShares: p.side === 'yes' ? p.shares : 0,
+        noShares: p.side === 'no' ? p.shares : 0,
+        entryPriceYes: p.side === 'yes' ? p.averagePrice : undefined,
+        entryPriceNo: p.side === 'no' ? p.averagePrice : undefined,
+        unrealizedPnl: p.unrealizedPnL,
+        totalInvested: p.shares * p.averagePrice,
+      }))
+      setPositions(mappedPositions)
+      return mappedPositions
     } catch (error: any) {
       console.error('Failed to fetch positions:', error)
       return []
@@ -178,6 +198,10 @@ export function usePnp() {
         }
 
         // Production: use actual SDK
+        if (!pnpClient) {
+          return { success: false, error: 'PNP client not initialized' }
+        }
+
         const result = await pnpClient.executeTrade(marketAddress, side, amountUsdc)
 
         if (result.success) {

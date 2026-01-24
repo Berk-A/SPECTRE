@@ -54,10 +54,14 @@ export function useTee() {
         return delegationStatus
       }
 
+      if (!teeClient) {
+        throw new Error('TEE client not initialized')
+      }
+
       const result = await teeClient.checkDelegationStatus(publicKey)
       const status: DelegationStatus = {
         isDelegated: result.isDelegated,
-        vaultPda: result.vaultPda?.toBase58(),
+        vaultPda: result.vaultPda ?? undefined, // Convert null to undefined
       }
 
       setDelegationStatus(status)
@@ -98,13 +102,18 @@ export function useTee() {
         return true
       }
 
+      if (!teeClient) {
+        toast.error('TEE client not initialized')
+        return false
+      }
+
       const result = await teeClient.delegateVault(publicKey)
 
       if (result.success) {
         setDelegationStatus({
           isDelegated: true,
-          delegatedAt: result.delegatedAt,
-          vaultPda: result.vaultPda?.toBase58(),
+          delegatedAt: new Date(),
+          vaultPda: `vault_${publicKey.toBase58().slice(0, 8)}`,
         })
 
         toast.success('Successfully delegated to TEE')
@@ -147,7 +156,12 @@ export function useTee() {
         return true
       }
 
-      const result = await teeClient.undelegateVault(publicKey, true)
+      if (!teeClient) {
+        toast.error('TEE client not initialized')
+        return false
+      }
+
+      const result = await teeClient.undelegateVault(publicKey)
 
       if (result.success) {
         setDelegationStatus({

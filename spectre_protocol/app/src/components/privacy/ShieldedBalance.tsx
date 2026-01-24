@@ -2,7 +2,7 @@ import { motion } from 'framer-motion'
 import { Shield, Lock } from 'lucide-react'
 import { Card } from '@/components/ui'
 import { usePrivacy } from '@/hooks/usePrivacy'
-import { formatSol, formatUsdc, cn } from '@/lib/utils'
+import { formatSol, formatUsdc } from '@/lib/utils'
 
 export function ShieldedBalance() {
   const { shieldedBalanceSol, shieldedBalanceUsdc, unspentNotes } = usePrivacy()

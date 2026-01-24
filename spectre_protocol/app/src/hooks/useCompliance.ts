@@ -65,11 +65,18 @@ export function useCompliance() {
       }
 
       // Production: use Range Protocol API
+      if (!rangeClient) {
+        throw new Error('Range client not initialized')
+      }
+
       const result = await rangeClient.getAddressRisk(publicKey.toBase58())
+
+      // Calculate if compliance passed based on risk assessment
+      const passed = result.riskScore <= MAX_RISK_SCORE && !result.isSanctioned && !result.hasMaliciousConnections
 
       const newStatus: ComplianceStatus = {
         checked: true,
-        passed: result.passed,
+        passed,
         riskScore: result.riskScore,
         riskLevel: classifyRiskLevel(result.riskScore),
         isSanctioned: result.isSanctioned,
@@ -122,11 +129,18 @@ export function useCompliance() {
           }
         }
 
+        if (!rangeClient) {
+          throw new Error('Range client not initialized')
+        }
+
         const result = await rangeClient.getAddressRisk(address)
+
+        // Calculate if compliance passed based on risk assessment
+        const passed = result.riskScore <= MAX_RISK_SCORE && !result.isSanctioned && !result.hasMaliciousConnections
 
         return {
           checked: true,
-          passed: result.passed,
+          passed,
           riskScore: result.riskScore,
           riskLevel: classifyRiskLevel(result.riskScore),
           isSanctioned: result.isSanctioned,

@@ -3,7 +3,6 @@ import { useWallet } from '@solana/wallet-adapter-react'
 import { Shield, AlertTriangle } from 'lucide-react'
 import { Button, Card, CardHeader, CardTitle, CardDescription, CardContent, Input } from '@/components/ui'
 import { usePrivacy } from '@/hooks/usePrivacy'
-import { formatSol } from '@/lib/utils'
 import { MIN_DEPOSIT_SOL, MAX_DEPOSIT_SOL } from '@/lib/config/constants'
 
 export function ShieldForm() {

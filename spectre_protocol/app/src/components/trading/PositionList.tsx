@@ -135,7 +135,7 @@ export function PositionList() {
         </Card>
       ) : (
         <div className="space-y-3">
-          {positions.map((position, i) => (
+          {positions.map((position) => (
             <PositionCard key={position.market} position={position} />
           ))}
 

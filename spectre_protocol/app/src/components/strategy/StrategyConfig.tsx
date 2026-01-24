@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Settings, Gauge, Target, TrendingDown, TrendingUp } from 'lucide-react'
-import { Button, Card, CardHeader, CardTitle, CardContent, Input, Badge } from '@/components/ui'
+import { Button, Card, CardHeader, CardTitle, CardContent, Input } from '@/components/ui'
 import { useTee, type StrategyConfig as StrategyConfigType } from '@/hooks/useTee'
 import { cn } from '@/lib/utils'
 

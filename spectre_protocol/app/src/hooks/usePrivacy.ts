@@ -21,7 +21,7 @@ export interface UnshieldResult {
 }
 
 export function usePrivacy() {
-  const { connected, publicKey } = useWallet()
+  const { connected } = useWallet()
   const { privacyClient } = useSpectreClient()
   const {
     notes,
@@ -31,7 +31,6 @@ export function usePrivacy() {
     addNote,
     markNoteSpent,
     setShieldedBalance,
-    setLoading,
     setError,
   } = usePrivacyStore()
 
@@ -89,6 +88,10 @@ export function usePrivacy() {
         }
 
         // Production: use actual SDK
+        if (!privacyClient) {
+          return { success: false, error: 'Privacy client not initialized' }
+        }
+
         const result = await privacyClient.shieldSol(amountSol)
 
         if (result.success && result.note) {
@@ -132,7 +135,7 @@ export function usePrivacy() {
 
   // Unshield SOL from privacy pool
   const unshieldSol = useCallback(
-    async (noteId: string, recipientAddress: string): Promise<UnshieldResult> => {
+    async (noteId: string, _recipientAddress: string): Promise<UnshieldResult> => {
       if (!connected) {
         return { success: false, error: 'Wallet not connected' }
       }
