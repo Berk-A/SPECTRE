@@ -491,13 +491,13 @@ export class BrowserPrivacyCash {
         const encryptedOutput1 = await this.encryptionService.encrypt(outputs[0].serialize())
         const encryptedOutput2 = await this.encryptionService.encrypt(outputs[1].serialize())
 
-        // External data
+        // External data - convert all BigInts to strings for serialization
         const extData = {
-            recipient: this.publicKey,
-            extAmount: BigInt(lamports),
-            encryptedOutput1,
-            encryptedOutput2,
-            fee: BigInt(0),
+            recipient: this.publicKey.toBase58(),
+            extAmount: lamports.toString(),
+            encryptedOutput1: Array.from(encryptedOutput1),
+            encryptedOutput2: Array.from(encryptedOutput2),
+            fee: '0',
         }
 
         // Calculate extDataHash
@@ -576,11 +576,11 @@ export class BrowserPrivacyCash {
         const encryptedOutput2 = await this.encryptionService.encrypt(outputs[1].serialize())
 
         const extData = {
-            recipient: new PublicKey(recipient),
-            extAmount: BigInt(-lamports), // Negative for withdraw
-            encryptedOutput1,
-            encryptedOutput2,
-            fee,
+            recipient: recipient,
+            extAmount: (-lamports).toString(), // Negative for withdraw
+            encryptedOutput1: Array.from(encryptedOutput1),
+            encryptedOutput2: Array.from(encryptedOutput2),
+            fee: fee.toString(),
         }
 
         const extDataHash = this.computeExtDataHash(extData)
