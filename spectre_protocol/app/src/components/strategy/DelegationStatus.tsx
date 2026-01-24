@@ -13,7 +13,6 @@ export function DelegationStatus() {
     isUndelegating,
     delegate,
     undelegate,
-    isLoading,
   } = useTee()
 
   return (

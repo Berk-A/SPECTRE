@@ -9,7 +9,7 @@ import { formatSol, cn } from '@/lib/utils'
 
 export function Withdraw() {
   const { unspentNotes, unshieldSol, unshieldLoading } = usePrivacy()
-  const { status: complianceStatus, checkCompliance, isChecking } = useCompliance()
+  const { checkCompliance, isChecking } = useCompliance()
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null)
   const [recipientAddress, setRecipientAddress] = useState('')
   const [step, setStep] = useState<1 | 2 | 3>(1)

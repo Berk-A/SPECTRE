@@ -1,12 +1,12 @@
 import { motion } from 'framer-motion'
 import { BarChart3, Wallet, TrendingUp, TrendingDown } from 'lucide-react'
 import { PositionList, TradeHistory } from '@/components/trading'
-import { Card, Badge } from '@/components/ui'
+import { Card } from '@/components/ui'
 import { usePnp } from '@/hooks/usePnp'
 import { formatUsd, cn } from '@/lib/utils'
 
 export function Positions() {
-  const { positions, trades } = usePnp()
+  const { positions } = usePnp()
 
   const totalInvested = positions.reduce(
     (acc, p) => acc + (p.totalInvested || 0),

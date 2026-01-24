@@ -715,9 +715,22 @@ export class SpectrePnpClient {
         return [];
       }
 
-      return addresses.map((a: any) =>
-        a instanceof PublicKey ? a : new PublicKey(a)
-      );
+      // Filter and convert addresses, handling invalid base58 strings
+      const validAddresses: PublicKey[] = [];
+      for (const a of addresses) {
+        try {
+          if (a instanceof PublicKey) {
+            validAddresses.push(a);
+          } else if (typeof a === 'string' && a.length > 0) {
+            validAddresses.push(new PublicKey(a));
+          }
+        } catch {
+          // Skip invalid addresses (e.g., test-defillama-xx placeholders)
+          continue;
+        }
+      }
+
+      return validAddresses;
     } catch (error: any) {
       console.error('Failed to fetch market addresses:', error.message);
       return [];

@@ -53,9 +53,14 @@ export function usePnp() {
         return DEMO_MARKETS
       }
 
+      if (!pnpClient) {
+        setError('PNP client not initialized')
+        return []
+      }
+
       const fetchedMarkets = await pnpClient.fetchActiveMarkets()
       const normalizedMarkets: Market[] = fetchedMarkets.map((m: any) => ({
-        address: m.address.toBase58(),
+        address: typeof m.address === 'string' ? m.address : m.address.toBase58(),
         question: m.question,
         yesPrice: m.yesPrice,
         noPrice: m.noPrice,
@@ -85,6 +90,10 @@ export function usePnp() {
         await new Promise((resolve) => setTimeout(resolve, 300))
         setPositions(DEMO_POSITIONS)
         return DEMO_POSITIONS
+      }
+
+      if (!pnpClient) {
+        return []
       }
 
       const fetchedPositions = await pnpClient.getPositions()
@@ -178,6 +187,10 @@ export function usePnp() {
         }
 
         // Production: use actual SDK
+        if (!pnpClient) {
+          return { success: false, error: 'PNP client not initialized' }
+        }
+
         const result = await pnpClient.executeTrade(marketAddress, side, amountUsdc)
 
         if (result.success) {

@@ -537,6 +537,9 @@ export class SpectrePrivacyClient {
 
   /**
    * Initialize the underlying PrivacyCash SDK client
+   *
+   * PrivacyCash SDK expects: new PrivacyCash({ RPC_url, owner, enableDebug })
+   * where owner is a Keypair object
    */
   private initializePrivacyCashClient(
     rpcUrl: string,
@@ -547,9 +550,17 @@ export class SpectrePrivacyClient {
       const { PrivacyCash } = require('privacycash');
 
       if (this.keypair) {
-        this.privacyCashClient = new PrivacyCash(rpcUrl, this.keypair);
+        // SDK expects object with named parameters
+        this.privacyCashClient = new PrivacyCash({
+          RPC_url: rpcUrl,
+          owner: this.keypair,
+          enableDebug: true, // Enable debug to suppress status render
+        });
+        console.log('PrivacyCash SDK initialized successfully');
       } else {
-        this.privacyCashClient = new PrivacyCash(rpcUrl);
+        // No keypair - use mock client for read-only operations
+        console.warn('PrivacyCash: No keypair provided, using mock client');
+        this.privacyCashClient = this.createMockClient();
       }
     } catch (error: any) {
       console.warn('PrivacyCash SDK initialization warning:', error.message);
@@ -622,7 +633,11 @@ export class SpectrePrivacyClient {
       const note = createDepositNote(amountLamports);
 
       // Execute deposit via PrivacyCash SDK
-      const signature = await this.privacyCashClient.deposit(amountSol);
+      // SDK expects: deposit({ lamports }) where lamports is an integer
+      const result = await this.privacyCashClient.deposit({ lamports: amountLamports });
+
+      // Extract signature from result (SDK returns transaction result)
+      const signature = typeof result === 'string' ? result : (result?.signature || result?.txSignature || 'success');
 
       // Update note with signature
       note.depositSignature = signature;
@@ -664,7 +679,15 @@ export class SpectrePrivacyClient {
       const note = createDepositNote(amount, tokenMint);
 
       // Execute deposit via PrivacyCash SDK
-      const signature = await this.privacyCashClient.depositSPL(amount, tokenMint);
+      // SDK expects: depositSPL({ base_units, mintAddress, amount })
+      const result = await this.privacyCashClient.depositSPL({
+        base_units: amount,
+        mintAddress: tokenMint.toString(),
+        amount: amount,
+      });
+
+      // Extract signature from result
+      const signature = typeof result === 'string' ? result : (result?.signature || result?.txSignature || 'success');
 
       // Update note with signature
       note.depositSignature = signature;
@@ -718,13 +741,15 @@ export class SpectrePrivacyClient {
     }
 
     try {
-      const amountSol = note.amount / LAMPORTS_PER_SOL;
-
       // Execute withdrawal via PrivacyCash SDK
-      const signature = await this.privacyCashClient.withdraw(
-        amountSol,
-        recipient.toString()
-      );
+      // SDK expects: withdraw({ lamports, recipientAddress, referrer })
+      const result = await this.privacyCashClient.withdraw({
+        lamports: note.amount,
+        recipientAddress: recipient.toString(),
+      });
+
+      // Extract signature from result
+      const signature = typeof result === 'string' ? result : (result?.signature || result?.txSignature || 'success');
 
       // Mark note as spent
       note.spent = true;
@@ -776,11 +801,16 @@ export class SpectrePrivacyClient {
 
     try {
       // Execute withdrawal via PrivacyCash SDK
-      const signature = await this.privacyCashClient.withdrawSPL(
-        note.amount,
-        note.tokenMint,
-        recipient.toString()
-      );
+      // SDK expects: withdrawSPL({ base_units, mintAddress, recipientAddress, amount, referrer })
+      const result = await this.privacyCashClient.withdrawSPL({
+        base_units: note.amount,
+        mintAddress: note.tokenMint.toString(),
+        recipientAddress: recipient.toString(),
+        amount: note.amount,
+      });
+
+      // Extract signature from result
+      const signature = typeof result === 'string' ? result : (result?.signature || result?.txSignature || 'success');
 
       // Mark note as spent
       note.spent = true;
@@ -811,8 +841,13 @@ export class SpectrePrivacyClient {
    */
   async getShieldedSolBalance(): Promise<number> {
     try {
-      const balance = await this.privacyCashClient.getPrivateBalance();
-      return balance * LAMPORTS_PER_SOL;
+      const result = await this.privacyCashClient.getPrivateBalance();
+      // SDK returns { lamports: number } object
+      if (typeof result === 'object' && result.lamports !== undefined) {
+        return result.lamports;
+      }
+      // Fallback for mock or different return format
+      return typeof result === 'number' ? result : 0;
     } catch (error) {
       console.error('Failed to get shielded balance:', error);
       return 0;
