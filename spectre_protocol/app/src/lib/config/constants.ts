@@ -1,13 +1,14 @@
 import { PublicKey } from '@solana/web3.js'
 
 // Network configuration
+// Use VITE_RPC_ENDPOINT environment variable for private RPC, fallback to public devnet
 export const NETWORK = 'devnet' as const
-export const RPC_ENDPOINT = 'https://api.devnet.solana.com'
+export const RPC_ENDPOINT = import.meta.env.VITE_RPC_ENDPOINT || 'https://api.devnet.solana.com'
 export const TEE_RPC_ENDPOINT = 'https://devnet.magicblock.app'
 
 // Program IDs
 export const SPECTRE_PROGRAM_ID = new PublicKey(
-  '6ypxTTHK4q9VC7bABp8U3Sptdt6qNQ7uJHoMqNWKmTuW'
+  'B2at4oGQFPAbuH2wMMpBsFrTvJi71GUvR7jyxny7HaGf'
 )
 
 export const PRIVACY_CASH_PROGRAM_ID = new PublicKey(
@@ -40,8 +41,16 @@ export const MIN_LIQUIDITY_USDC = 100
 export const MIN_DEPOSIT_SOL = 0.001
 export const MAX_DEPOSIT_SOL = 1000
 
-// Demo mode - set to false for production integrations
-export const DEMO_MODE = false
+// Feature-specific demo modes
+// PNP: Demo mode ON because program pnpxFx... doesn't exist on devnet
+export const PNP_DEMO_MODE = true
+// Privacy: Demo mode OFF - PrivacyCash IS deployed and circuits are in public/circuits/
+export const PRIVACY_DEMO_MODE = false
+// TEE: Demo mode OFF because MagicBlock delegation program IS deployed
+export const TEE_DEMO_MODE = false
+
+// Legacy compatibility - combines all demo modes
+export const DEMO_MODE = PNP_DEMO_MODE && PRIVACY_DEMO_MODE && TEE_DEMO_MODE
 
 // Layer labels
 export const LAYERS = {

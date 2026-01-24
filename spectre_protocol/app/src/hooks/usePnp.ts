@@ -11,7 +11,7 @@ import {
   DEMO_POSITIONS,
 } from '@/stores/tradingStore'
 import { generateId } from '@/lib/utils'
-import { DEMO_MODE } from '@/lib/config/constants'
+import { PNP_DEMO_MODE as DEMO_MODE } from '@/lib/config/constants'
 
 export type TradeSide = 'yes' | 'no'
 
@@ -161,11 +161,11 @@ export function usePnp() {
             const updatedPositions = positions.map((p) =>
               p.market === marketAddress
                 ? {
-                    ...p,
-                    yesShares: p.yesShares + (side === 'yes' ? shares : 0),
-                    noShares: p.noShares + (side === 'no' ? shares : 0),
-                    totalInvested: (p.totalInvested || 0) + amountUsdc,
-                  }
+                  ...p,
+                  yesShares: p.yesShares + (side === 'yes' ? shares : 0),
+                  noShares: p.noShares + (side === 'no' ? shares : 0),
+                  totalInvested: (p.totalInvested || 0) + amountUsdc,
+                }
                 : p
             )
             setPositions(updatedPositions)

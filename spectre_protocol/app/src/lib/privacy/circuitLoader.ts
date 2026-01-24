@@ -7,12 +7,13 @@
 // Configuration
 // ============================================
 
-// CDN URLs for circuit files - using public circom circuits
-// Note: cdn.spectre.money doesn't exist, use fallback or local
-const CIRCUIT_CDN_BASE = 'https://privacycash.github.io/circuits'
+// CDN URLs for circuit files
+// IMPORTANT: Due to CORS restrictions, circuits should be placed in public/circuits/
+// Download from a trusted source and place transaction2.wasm and transaction2.zkey there
+const CIRCUIT_CDN_BASE = '/circuits' // Local first (no CORS issues)
 const FALLBACK_CDN_BASE = 'https://privacycash.github.io/circuits'
 
-// For development/production, circuits can be served from public folder
+// For all environments, prefer local circuits to avoid CORS
 const LOCAL_CIRCUIT_PATH = '/circuits'
 
 // Circuit file specifications

@@ -4,7 +4,7 @@ import { toast } from 'sonner'
 import { usePrivacyStore, type StoredNote } from '@/stores/privacyStore'
 import { useSpectreClient } from './useSpectreClient'
 import { generateId } from '@/lib/utils'
-import { DEMO_MODE } from '@/lib/config/constants'
+import { PRIVACY_DEMO_MODE as DEMO_MODE } from '@/lib/config/constants'
 
 export interface ShieldResult {
   success: boolean
