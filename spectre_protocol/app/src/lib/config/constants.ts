@@ -47,11 +47,11 @@ export const PNP_DEMO_MODE = true
 // Privacy: Demo mode ON - Real SDK built but PrivacyCash relayer has CORS/rate limits
 // and circuit input format needs matching. Use demo mode for stable demo experience.
 export const PRIVACY_DEMO_MODE = true
-// TEE: Demo mode OFF because MagicBlock delegation program IS deployed
-export const TEE_DEMO_MODE = false
+// TEE: Demo mode ON - MagicBlock delegation program may not be on devnet
+export const TEE_DEMO_MODE = true
 
-// Legacy compatibility - combines all demo modes
-export const DEMO_MODE = PNP_DEMO_MODE && PRIVACY_DEMO_MODE && TEE_DEMO_MODE
+// Legacy compatibility - true if ANY feature is in demo mode
+export const DEMO_MODE = PNP_DEMO_MODE || PRIVACY_DEMO_MODE || TEE_DEMO_MODE
 
 // Layer labels
 export const LAYERS = {

@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 
 export interface Market {
   address: string
@@ -45,6 +46,8 @@ interface TradingState {
   // Actions
   setMarkets: (markets: Market[]) => void
   setPositions: (positions: Position[]) => void
+  addPosition: (position: Position) => void
+  updatePosition: (market: string, updates: Partial<Position>) => void
   addTrade: (trade: Trade) => void
   setSelectedMarket: (market: Market | null) => void
   setLoading: (loading: boolean) => void
@@ -52,31 +55,72 @@ interface TradingState {
   clearTrades: () => void
 }
 
-export const useTradingStore = create<TradingState>((set) => ({
-  markets: [],
-  positions: [],
-  trades: [],
-  selectedMarket: null,
-  isLoading: false,
-  error: null,
+export const useTradingStore = create<TradingState>()(
+  persist(
+    (set) => ({
+      markets: [],
+      positions: [],
+      trades: [],
+      selectedMarket: null,
+      isLoading: false,
+      error: null,
 
-  setMarkets: (markets) => set({ markets }),
+      setMarkets: (markets) => set({ markets }),
 
-  setPositions: (positions) => set({ positions }),
+      setPositions: (positions) => set({ positions }),
 
-  addTrade: (trade) =>
-    set((state) => ({
-      trades: [trade, ...state.trades].slice(0, 100), // Keep last 100 trades
-    })),
+      addPosition: (position) =>
+        set((state) => {
+          // Check if position for this market exists
+          const existing = state.positions.find(p => p.market === position.market)
+          if (existing) {
+            // Update existing position
+            return {
+              positions: state.positions.map(p =>
+                p.market === position.market
+                  ? {
+                    ...p,
+                    yesShares: p.yesShares + position.yesShares,
+                    noShares: p.noShares + position.noShares,
+                    totalInvested: (p.totalInvested || 0) + (position.totalInvested || 0),
+                  }
+                  : p
+              ),
+            }
+          }
+          // Add new position
+          return { positions: [...state.positions, position] }
+        }),
 
-  setSelectedMarket: (market) => set({ selectedMarket: market }),
+      updatePosition: (market, updates) =>
+        set((state) => ({
+          positions: state.positions.map(p =>
+            p.market === market ? { ...p, ...updates } : p
+          ),
+        })),
 
-  setLoading: (loading) => set({ isLoading: loading }),
+      addTrade: (trade) =>
+        set((state) => ({
+          trades: [trade, ...state.trades].slice(0, 100), // Keep last 100 trades
+        })),
 
-  setError: (error) => set({ error }),
+      setSelectedMarket: (market) => set({ selectedMarket: market }),
 
-  clearTrades: () => set({ trades: [] }),
-}))
+      setLoading: (loading) => set({ isLoading: loading }),
+
+      setError: (error) => set({ error }),
+
+      clearTrades: () => set({ trades: [], positions: [] }),
+    }),
+    {
+      name: 'spectre-trading-store',
+      partialize: (state) => ({
+        positions: state.positions,
+        trades: state.trades,
+      }),
+    }
+  )
+)
 
 // Demo data for presentation
 export const DEMO_MARKETS: Market[] = [

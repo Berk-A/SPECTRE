@@ -75,6 +75,8 @@ export const usePrivacyStore = create<PrivacyState>()(
       name: 'spectre-privacy-store',
       partialize: (state) => ({
         notes: state.notes,
+        shieldedBalanceSol: state.shieldedBalanceSol,
+        shieldedBalanceUsdc: state.shieldedBalanceUsdc,
       }),
     }
   )
