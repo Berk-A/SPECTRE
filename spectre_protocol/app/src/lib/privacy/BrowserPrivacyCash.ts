@@ -503,22 +503,22 @@ export class BrowserPrivacyCash {
         // Calculate extDataHash
         const extDataHash = this.computeExtDataHash(extData)
 
-        // Build circuit input
+        // Build circuit input - ensure all values are strings for snarkjs
         const circuitInput = {
-            root: treeState.root,
-            inputNullifier: inputs.map((u) => u.getNullifier()),
-            outputCommitment: outputs.map((u) => u.getCommitment()),
+            root: treeState.root.toString(),
+            inputNullifier: inputs.map((u) => u.getNullifier().toString()),
+            outputCommitment: outputs.map((u) => u.getCommitment().toString()),
             publicAmount: publicAmount.toString(),
-            extDataHash,
+            extDataHash: extDataHash.toString(),
             inAmount: inputs.map((u) => u.amount.toString()),
-            inPrivateKey: inputs.map((u) => u.keypair.privkey),
+            inPrivateKey: inputs.map((u) => u.keypair.privkey.toString()),
             inBlinding: inputs.map((u) => u.blinding.toString()),
-            inPathIndices: inputMerkleIndices,
-            inPathElements: inputMerklePaths,
+            inPathIndices: inputMerkleIndices.map((idx) => idx.toString()),
+            inPathElements: inputMerklePaths.map((path) => path.map((el) => el.toString())),
             outAmount: outputs.map((u) => u.amount.toString()),
             outBlinding: outputs.map((u) => u.blinding.toString()),
-            outPubkey: outputs.map((u) => u.keypair.pubkey),
-            mintAddress: inputs[0].mintAddress,
+            outPubkey: outputs.map((u) => u.keypair.pubkey.toString()),
+            mintAddress: inputs[0].mintAddress.toString(),
         }
 
         return { circuitInput, extData }
