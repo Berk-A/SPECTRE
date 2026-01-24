@@ -61,7 +61,7 @@ export function useTee() {
       const result = await teeClient.checkDelegationStatus(publicKey)
       const status: DelegationStatus = {
         isDelegated: result.isDelegated,
-        vaultPda: result.vaultPda, // Already a string
+        vaultPda: result.vaultPda ?? undefined, // Convert null to undefined
       }
 
       setDelegationStatus(status)

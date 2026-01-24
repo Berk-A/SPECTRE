@@ -97,8 +97,19 @@ export function usePnp() {
       }
 
       const fetchedPositions = await pnpClient.getPositions()
-      setPositions(fetchedPositions)
-      return fetchedPositions
+      // Map BrowserPnpClient Position type to tradingStore Position type
+      const mappedPositions: Position[] = fetchedPositions.map(p => ({
+        market: p.market,
+        marketQuestion: p.question,
+        yesShares: p.side === 'yes' ? p.shares : 0,
+        noShares: p.side === 'no' ? p.shares : 0,
+        entryPriceYes: p.side === 'yes' ? p.averagePrice : undefined,
+        entryPriceNo: p.side === 'no' ? p.averagePrice : undefined,
+        unrealizedPnl: p.unrealizedPnL,
+        totalInvested: p.shares * p.averagePrice,
+      }))
+      setPositions(mappedPositions)
+      return mappedPositions
     } catch (error: any) {
       console.error('Failed to fetch positions:', error)
       return []

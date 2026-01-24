@@ -1,7 +1,13 @@
-import { useMemo } from 'react'
+import { useMemo, useEffect, useState, useCallback } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
-import { Connection, PublicKey } from '@solana/web3.js'
+import { PublicKey, Transaction } from '@solana/web3.js'
 import { DEMO_MODE, SPECTRE_PROGRAM_ID } from '@/lib/config/constants'
+
+// Import browser-compatible clients
+import { getBrowserPrivacyClient, type BrowserPrivacyClient, type DepositNote, type ShieldProgress, type UnshieldProgress } from '@/lib/privacy/BrowserPrivacyClient'
+import { getBrowserPnpClient, type BrowserPnpClient, type PnpMarket, type Position } from '@/lib/pnp/BrowserPnpClient'
+import { getBrowserTeeClient, type BrowserTeeClient, type DelegationStatus } from '@/lib/tee/BrowserTeeClient'
+import { getCircuitLoader, preloadCircuits, type LoadProgress } from '@/lib/privacy/circuitLoader'
 
 // Range Protocol API configuration
 const RANGE_API_BASE = 'https://api.range.org'
@@ -11,30 +17,42 @@ export interface SpectreClients {
   isReady: boolean
   isConnected: boolean
   walletAddress: string | null
+  // Circuit loading state
+  circuitsLoaded: boolean
+  circuitProgress: LoadProgress | null
+  // Clients
   privacyClient: PrivacyClient | null
   teeClient: TeeClient | null
   pnpClient: PnpClient | null
   rangeClient: RangeClient | null
+  // Preload function
+  preloadCircuits: (onProgress?: (progress: LoadProgress) => void) => Promise<void>
 }
 
 // Type definitions for client methods
 export interface PrivacyClient {
-  shieldSol: (amount: number) => Promise<ShieldResult>
-  unshieldSol: (note: any, recipient: string) => Promise<UnshieldResult>
+  shieldSol: (amount: number, onProgress?: (progress: ShieldProgress) => void) => Promise<ShieldResult>
+  unshieldSol: (note: DepositNote, recipient: string, onProgress?: (progress: UnshieldProgress) => void) => Promise<UnshieldResult>
   getShieldedSolBalance: () => Promise<number>
+  getUnspentNotes: () => Promise<DepositNote[]>
+  exportNotes: (password: string) => Promise<string>
+  importNotes: (encrypted: string, password: string) => Promise<void>
 }
 
 export interface TeeClient {
   delegateVault: (authority: PublicKey) => Promise<DelegationResult>
   undelegateVault: (authority: PublicKey) => Promise<DelegationResult>
   checkDelegationStatus: (authority: PublicKey) => Promise<DelegationStatus>
+  getTeeHealth: () => Promise<{ healthy: boolean; latencyMs: number; slot: number }>
+  executeOnTee: (transaction: Transaction) => Promise<TeeExecutionResult>
 }
 
 export interface PnpClient {
   fetchActiveMarkets: () => Promise<PnpMarket[]>
   fetchMarketAddresses: () => Promise<string[]>
   executeTrade: (market: string, side: 'yes' | 'no', amount: number) => Promise<TradeResult>
-  getPositions: () => Promise<any[]>
+  getPositions: () => Promise<Position[]>
+  claimWinnings: (market: string) => Promise<TradeResult>
 }
 
 export interface RangeClient {
@@ -46,7 +64,7 @@ export interface RangeClient {
 interface ShieldResult {
   success: boolean
   signature?: string
-  note?: any
+  note?: DepositNote
   error?: string
 }
 
@@ -63,20 +81,12 @@ interface DelegationResult {
   error?: string
 }
 
-interface DelegationStatus {
-  isDelegated: boolean
-  vaultPda?: string
-}
-
-interface PnpMarket {
-  address: string
-  question: string
-  yesPrice: number
-  noPrice: number
-  endTime: Date
-  isResolved: boolean
-  liquidity?: number
-  volume24h?: number
+interface TeeExecutionResult {
+  success: boolean
+  signature?: string
+  l2Slot?: number
+  executionTimeMs?: number
+  error?: string
 }
 
 interface TradeResult {
@@ -106,7 +116,52 @@ interface ComplianceResult {
 
 export function useSpectreClient(): SpectreClients {
   const { connection } = useConnection()
-  const { publicKey, connected, signTransaction } = useWallet()
+  const { publicKey, connected, signTransaction, signAllTransactions } = useWallet()
+  const [circuitsLoaded, setCircuitsLoaded] = useState(false)
+  const [circuitProgress, setCircuitProgress] = useState<LoadProgress | null>(null)
+
+  // Create and configure browser clients
+  const browserClients = useMemo(() => {
+    const privacyClient = getBrowserPrivacyClient(connection)
+    const pnpClient = getBrowserPnpClient(connection)
+    const teeClient = getBrowserTeeClient()
+
+    // Set wallet when connected
+    if (publicKey && signTransaction) {
+      privacyClient.setWallet(publicKey, signTransaction as (tx: Transaction) => Promise<Transaction>)
+      pnpClient.setWallet(publicKey, signTransaction as (tx: Transaction) => Promise<Transaction>)
+      teeClient.setWallet(
+        publicKey,
+        signTransaction as (tx: Transaction) => Promise<Transaction>,
+        signAllTransactions as ((txs: Transaction[]) => Promise<Transaction[]>) | undefined
+      )
+    }
+
+    return { privacyClient, pnpClient, teeClient }
+  }, [connection, publicKey, signTransaction, signAllTransactions])
+
+  // Preload circuits in background on mount
+  useEffect(() => {
+    const loader = getCircuitLoader()
+    loader.isCached().then(cached => {
+      if (cached) {
+        setCircuitsLoaded(true)
+      }
+    })
+  }, [])
+
+  // Preload function
+  const handlePreloadCircuits = useCallback(async (onProgress?: (progress: LoadProgress) => void) => {
+    if (circuitsLoaded) return
+
+    const progressHandler = (progress: LoadProgress) => {
+      setCircuitProgress(progress)
+      onProgress?.(progress)
+    }
+
+    await preloadCircuits(progressHandler)
+    setCircuitsLoaded(true)
+  }, [circuitsLoaded])
 
   const clients = useMemo(() => {
     const walletAddress = publicKey?.toBase58() || null
@@ -116,201 +171,103 @@ export function useSpectreClient(): SpectreClients {
         isReady: true,
         isConnected: connected,
         walletAddress,
+        circuitsLoaded: true,
+        circuitProgress: null,
         privacyClient: createMockPrivacyClient(),
         teeClient: createMockTeeClient(),
         pnpClient: createMockPnpClient(),
         rangeClient: createMockRangeClient(),
+        preloadCircuits: async () => {},
       }
     }
 
-    // Production mode - create browser-compatible clients
-    // Note: Node.js SDKs (pnp-sdk, privacy-cash) cannot run in browser
-    // These clients use browser-compatible implementations
+    // Production mode - use browser-compatible clients
     return {
-      isReady: connected,
+      isReady: connected && publicKey !== null,
       isConnected: connected,
       walletAddress,
-      privacyClient: createBrowserPrivacyClient(connection, publicKey, signTransaction),
-      teeClient: createBrowserTeeClient(connection, publicKey),
-      pnpClient: createBrowserPnpClient(connection),
+      circuitsLoaded,
+      circuitProgress,
+      privacyClient: createWrappedPrivacyClient(browserClients.privacyClient),
+      teeClient: createWrappedTeeClient(browserClients.teeClient),
+      pnpClient: createWrappedPnpClient(browserClients.pnpClient),
       rangeClient: createBrowserRangeClient(),
+      preloadCircuits: handlePreloadCircuits,
     }
-  }, [connection, publicKey, connected, signTransaction])
+  }, [connection, publicKey, connected, circuitsLoaded, circuitProgress, browserClients, handlePreloadCircuits])
 
   return clients
 }
 
 // ============================================
-// Browser-Compatible Production Clients
+// Wrapper Functions for Browser Clients
 // ============================================
 
-function createBrowserPrivacyClient(
-  _connection: Connection,
-  publicKey: PublicKey | null,
-  _signTransaction: any
-): PrivacyClient {
+function createWrappedPrivacyClient(client: BrowserPrivacyClient): PrivacyClient {
   return {
-    shieldSol: async (amount: number) => {
-      if (!publicKey) {
-        return { success: false, error: 'Wallet not connected' }
-      }
-
-      try {
-        // For now, simulate the operation and show what would happen
-        // Full implementation requires PrivacyCash SDK browser build
-        console.log(`[PrivacyCash] Would shield ${amount} SOL from ${publicKey.toBase58()}`)
-
-        // Create a mock note for demonstration
-        const note = {
-          commitment: new Uint8Array(32),
-          nullifier: new Uint8Array(32),
-          secret: new Uint8Array(32),
-          amount: amount * 1e9,
-          tokenType: 'SOL' as const,
-          createdAt: new Date(),
-          spent: false,
-        }
-
-        // Fill with random bytes for demo
-        if (typeof window !== 'undefined' && window.crypto) {
-          window.crypto.getRandomValues(note.commitment)
-          window.crypto.getRandomValues(note.nullifier)
-          window.crypto.getRandomValues(note.secret)
-        }
-
-        return {
-          success: true,
-          signature: `shield_${Date.now()}`,
-          note,
-        }
-      } catch (error: any) {
-        return { success: false, error: error.message }
-      }
+    shieldSol: async (amount, onProgress) => {
+      return client.shieldSol(amount, onProgress)
     },
-
-    unshieldSol: async (note: any, recipient: string) => {
-      if (!publicKey) {
-        return { success: false, error: 'Wallet not connected' }
-      }
-
-      try {
-        console.log(`[PrivacyCash] Would unshield to ${recipient}`)
-        return {
-          success: true,
-          signature: `unshield_${Date.now()}`,
-          amountReceived: note.amount,
-        }
-      } catch (error: any) {
-        return { success: false, error: error.message }
-      }
+    unshieldSol: async (note, recipient, onProgress) => {
+      return client.unshieldSol(note, recipient, onProgress)
     },
-
     getShieldedSolBalance: async () => {
-      // Would query PrivacyCash API for UTXOs
-      return 0
+      return client.getShieldedBalance()
+    },
+    getUnspentNotes: async () => {
+      return client.getUnspentNotes()
+    },
+    exportNotes: async (password) => {
+      return client.exportNotes(password)
+    },
+    importNotes: async (encrypted, password) => {
+      return client.importNotes(encrypted, password)
     },
   }
 }
 
-function createBrowserTeeClient(
-  _connection: Connection,
-  publicKey: PublicKey | null
-): TeeClient {
+function createWrappedTeeClient(client: BrowserTeeClient): TeeClient {
   return {
-    delegateVault: async (authority: PublicKey) => {
-      if (!publicKey) {
-        return { success: false, error: 'Wallet not connected' }
-      }
-
-      try {
-        console.log(`[MagicBlock] Would delegate vault for ${authority.toBase58()}`)
-
-        // In production, this would:
-        // 1. Build the delegate_to_tee instruction
-        // 2. Sign with wallet adapter
-        // 3. Send to MagicBlock devnet
-
-        return {
-          success: true,
-          signature: `delegate_${Date.now()}`,
-        }
-      } catch (error: any) {
-        return { success: false, error: error.message }
+    delegateVault: async (authority) => {
+      return client.delegateVault(authority)
+    },
+    undelegateVault: async (authority) => {
+      const result = await client.undelegateVault(authority)
+      return {
+        success: result.success,
+        signature: result.signature,
+        error: result.error,
       }
     },
-
-    undelegateVault: async (authority: PublicKey) => {
-      if (!publicKey) {
-        return { success: false, error: 'Wallet not connected' }
-      }
-
-      try {
-        console.log(`[MagicBlock] Would undelegate vault for ${authority.toBase58()}`)
-        return {
-          success: true,
-          signature: `undelegate_${Date.now()}`,
-        }
-      } catch (error: any) {
-        return { success: false, error: error.message }
-      }
+    checkDelegationStatus: async (authority) => {
+      return client.checkDelegationStatus(authority)
     },
-
-    checkDelegationStatus: async (authority: PublicKey) => {
-      try {
-        // Derive vault PDA and check if delegation record exists
-        const [vaultPda] = PublicKey.findProgramAddressSync(
-          [Buffer.from('spectre_vault'), authority.toBuffer()],
-          new PublicKey(SPECTRE_PROGRAM_ID)
-        )
-
-        // Check if account exists on L1 (would verify delegation status in production)
-        // await connection.getAccountInfo(vaultPda)
-
-        return {
-          isDelegated: false, // Would check delegation program
-          vaultPda: vaultPda.toBase58(),
-        }
-      } catch (error) {
-        return { isDelegated: false }
-      }
+    getTeeHealth: async () => {
+      return client.getTeeHealth()
+    },
+    executeOnTee: async (transaction) => {
+      return client.executeOnTee(transaction)
     },
   }
 }
 
-function createBrowserPnpClient(
-  _connection: Connection
-): PnpClient {
-  // Note: The PNP SDK uses Node.js-specific modules (crypto, etc.) that cannot
-  // run in the browser. For production, you would need either:
-  // 1. A backend API that proxies PNP SDK calls
-  // 2. A browser-compatible version of the PNP SDK
-  // For now, we use demo markets in the browser
-
+function createWrappedPnpClient(client: BrowserPnpClient): PnpClient {
   return {
     fetchActiveMarkets: async () => {
-      console.log('[PNP] Browser mode - returning demo markets')
-      console.log('[PNP] Note: PNP SDK requires Node.js runtime')
-      return getDemoMarkets()
+      return client.fetchActiveMarkets()
     },
-
     fetchMarketAddresses: async () => {
-      return getDemoMarkets().map(m => m.address)
+      const markets = await client.fetchActiveMarkets()
+      return markets.map(m => m.address)
     },
-
-    executeTrade: async (market: string, side: 'yes' | 'no', amount: number) => {
-      console.log(`[PNP] Would execute ${side} trade for ${amount} USDC on market ${market}`)
-
-      // In production, this would go through a backend API that calls the PNP SDK
-      return {
-        success: true,
-        signature: `trade_${Date.now()}`,
-        sharesReceived: amount / 0.5, // Estimate
-        executionPrice: 0.5,
-      }
+    executeTrade: async (market, side, amount) => {
+      return client.executeTrade(market, side, amount)
     },
-
     getPositions: async () => {
-      return []
+      return client.getPositions()
+    },
+    claimWinnings: async (market) => {
+      return client.claimWinnings(market)
     },
   }
 }
@@ -364,8 +321,9 @@ function createBrowserRangeClient(): RangeClient {
           hasMaliciousConnections: (data.riskScore || 0) > 50,
           numHops: 0,
         }
-      } catch (error: any) {
-        console.error('[Range] API error:', error.message)
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+        console.error('[Range] API error:', errorMessage)
         // Return safe default on error
         return {
           riskScore: 5,
@@ -404,30 +362,39 @@ function getDemoMarkets(): PnpMarket[] {
       question: 'Will BTC reach $100k by end of Q1 2026?',
       yesPrice: 0.65,
       noPrice: 0.35,
+      yesShares: 50000,
+      noShares: 50000,
       endTime: new Date('2026-03-31'),
       isResolved: false,
       liquidity: 50000,
       volume24h: 12500,
+      creator: 'demo_creator',
     },
     {
       address: 'demo_market_2',
       question: 'Will ETH flip BTC market cap in 2026?',
       yesPrice: 0.15,
       noPrice: 0.85,
+      yesShares: 35000,
+      noShares: 35000,
       endTime: new Date('2026-12-31'),
       isResolved: false,
       liquidity: 35000,
       volume24h: 8200,
+      creator: 'demo_creator',
     },
     {
       address: 'demo_market_3',
       question: 'Will Solana TVL exceed $50B by June 2026?',
       yesPrice: 0.45,
       noPrice: 0.55,
+      yesShares: 28000,
+      noShares: 28000,
       endTime: new Date('2026-06-30'),
       isResolved: false,
       liquidity: 28000,
       volume24h: 6800,
+      creator: 'demo_creator',
     },
   ]
 }
@@ -442,9 +409,9 @@ function createMockPrivacyClient(): PrivacyClient {
       success: true,
       signature: 'mock_sig_' + Date.now(),
       note: {
-        commitment: new Uint8Array(32),
-        nullifier: new Uint8Array(32),
-        secret: new Uint8Array(32),
+        commitment: Array.from({ length: 32 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join(''),
+        nullifier: Array.from({ length: 32 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join(''),
+        secret: Array.from({ length: 32 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join(''),
         amount: amount * 1e9,
         tokenType: 'SOL' as const,
         createdAt: new Date(),
@@ -457,6 +424,9 @@ function createMockPrivacyClient(): PrivacyClient {
       amountReceived: 1e9,
     }),
     getShieldedSolBalance: async () => 2.5e9,
+    getUnspentNotes: async () => [],
+    exportNotes: async () => '{}',
+    importNotes: async () => {},
   }
 }
 
@@ -470,8 +440,27 @@ function createMockTeeClient(): TeeClient {
       success: true,
       signature: 'mock_sig_' + Date.now(),
     }),
-    checkDelegationStatus: async () => ({
-      isDelegated: false,
+    checkDelegationStatus: async (authority: PublicKey) => {
+      const [vaultPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('spectre_vault'), authority.toBuffer()],
+        new PublicKey(SPECTRE_PROGRAM_ID)
+      )
+      return {
+        isDelegated: false,
+        vaultPda: vaultPda.toBase58(),
+        owner: authority.toBase58(),
+      }
+    },
+    getTeeHealth: async () => ({
+      healthy: true,
+      latencyMs: 50,
+      slot: 123456789,
+    }),
+    executeOnTee: async () => ({
+      success: true,
+      signature: 'mock_sig_' + Date.now(),
+      l2Slot: 123456789,
+      executionTimeMs: 400,
     }),
   }
 }
@@ -487,6 +476,10 @@ function createMockPnpClient(): PnpClient {
       executionPrice: 0.45,
     }),
     getPositions: async () => [],
+    claimWinnings: async () => ({
+      success: true,
+      signature: 'mock_sig_' + Date.now(),
+    }),
   }
 }
 
