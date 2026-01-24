@@ -1,10 +1,17 @@
-import { useState, useCallback } from 'react'
+/**
+ * Privacy Hook
+ * 
+ * Unified hook for privacy features that works in both demo and production modes.
+ * Uses BrowserPrivacyCash for real ZK proofs when PRIVACY_DEMO_MODE is false.
+ */
+
+import { useState, useCallback, useEffect } from 'react'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { toast } from 'sonner'
 import { usePrivacyStore, type StoredNote } from '@/stores/privacyStore'
-import { useSpectreClient } from './useSpectreClient'
 import { generateId } from '@/lib/utils'
-import { PRIVACY_DEMO_MODE as DEMO_MODE } from '@/lib/config/constants'
+import { PRIVACY_DEMO_MODE } from '@/lib/config/constants'
+import { useBrowserPrivacy } from './useBrowserPrivacy'
 
 export interface ShieldResult {
   success: boolean
@@ -21,13 +28,14 @@ export interface UnshieldResult {
 }
 
 export function usePrivacy() {
-  const { connected } = useWallet()
-  const { privacyClient } = useSpectreClient()
+  const { connected, publicKey } = useWallet()
+  const browserPrivacy = useBrowserPrivacy()
+
   const {
     notes,
-    shieldedBalanceSol,
+    shieldedBalanceSol: storedBalanceSol,
     shieldedBalanceUsdc,
-    isLoading,
+    isLoading: storeLoading,
     addNote,
     markNoteSpent,
     setShieldedBalance,
@@ -36,8 +44,24 @@ export function usePrivacy() {
 
   const [shieldLoading, setShieldLoading] = useState(false)
   const [unshieldLoading, setUnshieldLoading] = useState(false)
+  const [initAttempted, setInitAttempted] = useState(false)
 
-  // Calculate balance from unspent notes
+  // Auto-initialize browser privacy when wallet connects (if not in demo mode)
+  useEffect(() => {
+    if (!PRIVACY_DEMO_MODE && connected && publicKey && !browserPrivacy.isInitialized && !browserPrivacy.isInitializing && !initAttempted) {
+      setInitAttempted(true)
+      browserPrivacy.initialize()
+    }
+  }, [connected, publicKey, browserPrivacy, initAttempted])
+
+  // Reset init attempted when wallet disconnects
+  useEffect(() => {
+    if (!connected) {
+      setInitAttempted(false)
+    }
+  }, [connected])
+
+  // Calculate balance from unspent notes (demo mode)
   const calculateBalance = useCallback(() => {
     const unspentNotes = notes.filter((n) => !n.spent)
     const solBalance = unspentNotes
@@ -61,8 +85,8 @@ export function usePrivacy() {
       setShieldLoading(true)
 
       try {
-        if (DEMO_MODE) {
-          // Simulate shield operation
+        if (PRIVACY_DEMO_MODE) {
+          // Demo mode: simulate shield operation
           await new Promise((resolve) => setTimeout(resolve, 2000))
 
           const note: StoredNote = {
@@ -87,32 +111,31 @@ export function usePrivacy() {
           }
         }
 
-        // Production: use actual SDK
-        if (!privacyClient) {
-          return { success: false, error: 'Privacy client not initialized' }
+        // Production: use BrowserPrivacyCash
+        if (!browserPrivacy.isInitialized) {
+          return { success: false, error: 'Privacy client not initialized. Please sign the initialization message.' }
         }
 
-        const result = await privacyClient.shieldSol(amountSol)
+        const result = await browserPrivacy.shield(amountSol, (stage, percent) => {
+          console.log(`[Shield] ${stage}: ${percent}%`)
+        })
 
-        if (result.success && result.note) {
+        if (result.success) {
+          // Store note reference in local state
           const storedNote: StoredNote = {
             id: generateId(),
-            commitment: Buffer.from(result.note.commitment).toString('hex'),
-            amount: result.note.amount,
-            tokenType: result.note.tokenType,
-            createdAt: result.note.createdAt.toISOString(),
+            commitment: `real_${Date.now()}`,
+            amount: amountSol * 1e9,
+            tokenType: 'SOL',
+            createdAt: new Date().toISOString(),
             spent: false,
-            depositSignature: result.signature,
+            depositSignature: result.txHash || 'pending',
           }
-
           addNote(storedNote)
-          calculateBalance()
-
-          toast.success(`Successfully shielded ${amountSol} SOL`)
 
           return {
             success: true,
-            signature: result.signature,
+            signature: result.txHash,
             note: storedNote,
           }
         }
@@ -121,8 +144,8 @@ export function usePrivacy() {
           success: false,
           error: result.error || 'Shield operation failed',
         }
-      } catch (error: any) {
-        const errorMsg = error.message || 'Unknown error'
+      } catch (error: unknown) {
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error'
         setError(errorMsg)
         toast.error(`Shield failed: ${errorMsg}`)
         return { success: false, error: errorMsg }
@@ -130,30 +153,32 @@ export function usePrivacy() {
         setShieldLoading(false)
       }
     },
-    [connected, privacyClient, addNote, calculateBalance, setError]
+    [connected, browserPrivacy, addNote, calculateBalance, setError]
   )
 
   // Unshield SOL from privacy pool
   const unshieldSol = useCallback(
-    async (noteId: string, _recipientAddress: string): Promise<UnshieldResult> => {
+    async (amountOrNoteId: string | number, recipientAddress?: string): Promise<UnshieldResult> => {
       if (!connected) {
         return { success: false, error: 'Wallet not connected' }
-      }
-
-      const note = notes.find((n) => n.id === noteId)
-      if (!note) {
-        return { success: false, error: 'Note not found' }
-      }
-
-      if (note.spent) {
-        return { success: false, error: 'Note already spent' }
       }
 
       setUnshieldLoading(true)
 
       try {
-        if (DEMO_MODE) {
-          // Simulate unshield operation
+        if (PRIVACY_DEMO_MODE) {
+          // Demo mode: find note by ID and simulate unshield
+          const noteId = typeof amountOrNoteId === 'string' ? amountOrNoteId : ''
+          const note = notes.find((n) => n.id === noteId)
+
+          if (!note) {
+            return { success: false, error: 'Note not found' }
+          }
+
+          if (note.spent) {
+            return { success: false, error: 'Note already spent' }
+          }
+
           await new Promise((resolve) => setTimeout(resolve, 2000))
 
           markNoteSpent(noteId)
@@ -169,14 +194,34 @@ export function usePrivacy() {
           }
         }
 
-        // Production: use actual SDK
-        // Would need to deserialize the note and call the SDK
+        // Production: use BrowserPrivacyCash
+        if (!browserPrivacy.isInitialized) {
+          return { success: false, error: 'Privacy client not initialized' }
+        }
+
+        const amountSol = typeof amountOrNoteId === 'number' ? amountOrNoteId : 0
+        if (amountSol <= 0) {
+          return { success: false, error: 'Invalid amount' }
+        }
+
+        const result = await browserPrivacy.unshield(amountSol, recipientAddress, (stage, percent) => {
+          console.log(`[Unshield] ${stage}: ${percent}%`)
+        })
+
+        if (result.success) {
+          return {
+            success: true,
+            signature: result.txHash,
+            amountReceived: result.amount,
+          }
+        }
+
         return {
           success: false,
-          error: 'Production unshield not implemented',
+          error: result.error || 'Unshield operation failed',
         }
-      } catch (error: any) {
-        const errorMsg = error.message || 'Unknown error'
+      } catch (error: unknown) {
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error'
         setError(errorMsg)
         toast.error(`Unshield failed: ${errorMsg}`)
         return { success: false, error: errorMsg }
@@ -184,7 +229,7 @@ export function usePrivacy() {
         setUnshieldLoading(false)
       }
     },
-    [connected, notes, markNoteSpent, calculateBalance, setError]
+    [connected, notes, browserPrivacy, markNoteSpent, calculateBalance, setError]
   )
 
   // Export notes as JSON
@@ -213,29 +258,42 @@ export function usePrivacy() {
         })
         calculateBalance()
         toast.success(`Imported ${importedNotes.length} notes`)
-      } catch (error) {
+      } catch {
         toast.error('Failed to import notes: Invalid format')
       }
     },
     [notes, addNote, calculateBalance]
   )
 
+  // Get shielded balance (use browser SDK balance if available)
+  const shieldedBalanceSol = PRIVACY_DEMO_MODE
+    ? storedBalanceSol / 1e9
+    : browserPrivacy.shieldedBalanceSol
+
   return {
     // State
     notes,
     unspentNotes: notes.filter((n) => !n.spent),
     shieldedBalanceSol,
-    shieldedBalanceUsdc,
-    isLoading: isLoading || shieldLoading || unshieldLoading,
+    shieldedBalanceUsdc: shieldedBalanceUsdc / 1e9,
+    isLoading: storeLoading || shieldLoading || unshieldLoading || browserPrivacy.isLoading,
     shieldLoading,
     unshieldLoading,
 
+    // Privacy client state
+    isInitialized: PRIVACY_DEMO_MODE ? true : browserPrivacy.isInitialized,
+    isInitializing: browserPrivacy.isInitializing,
+    initProgress: browserPrivacy.initProgress,
+
     // Actions
+    initialize: browserPrivacy.initialize,
     shieldSol,
     unshieldSol,
     exportNotes,
     importNotes,
     calculateBalance,
+    fetchBalance: browserPrivacy.fetchBalance,
+    clearCache: browserPrivacy.clearCache,
   }
 }
 
