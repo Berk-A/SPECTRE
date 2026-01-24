@@ -13,8 +13,11 @@ import { BrowserUtxo, BrowserKeypair, type PoseidonHasher } from './browser-utxo
 import { getCircuitLoader } from './circuitLoader'
 import { PRIVACY_CASH_PROGRAM_ID } from '@/lib/config/constants'
 
-// PrivacyCash Relayer API
-const RELAYER_API_URL = 'https://api3.privacycash.org'
+// PrivacyCash Relayer API - using Vercel proxy to bypass CORS
+// In development: direct API, In production: /api/privacy proxy
+const RELAYER_API_URL = typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+    ? '/api/privacy'  // Production: use Vercel serverless proxy
+    : 'https://api3.privacycash.org'  // Local dev: direct (may need proxy)
 const FETCH_UTXOS_GROUP_SIZE = 100
 
 // Field size for circuit calculations
