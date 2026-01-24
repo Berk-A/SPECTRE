@@ -7,11 +7,12 @@
 // Configuration
 // ============================================
 
-// CDN URLs for circuit files - update for production
-const CIRCUIT_CDN_BASE = 'https://cdn.spectre.money/circuits'
+// CDN URLs for circuit files - using public circom circuits
+// Note: cdn.spectre.money doesn't exist, use fallback or local
+const CIRCUIT_CDN_BASE = 'https://privacycash.github.io/circuits'
 const FALLBACK_CDN_BASE = 'https://privacycash.github.io/circuits'
 
-// For development, circuits can be served locally
+// For development/production, circuits can be served from public folder
 const LOCAL_CIRCUIT_PATH = '/circuits'
 
 // Circuit file specifications

@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion'
-import { useWallet } from '@solana/wallet-adapter-react'
+import { useWallet, useConnection } from '@solana/wallet-adapter-react'
+import { useState, useEffect } from 'react'
 import {
   LayerVisualization,
   StatusIndicators,
@@ -12,10 +13,32 @@ import { usePnp } from '@/hooks/usePnp'
 import type { StatusType } from '@/components/dashboard/StatusIndicators'
 
 export function Dashboard() {
-  const { connected } = useWallet()
+  const { connected, publicKey } = useWallet()
+  const { connection } = useConnection()
   const { delegationStatus } = useTee()
   const { shieldedBalanceSol, unspentNotes } = usePrivacy()
   const { positions } = usePnp()
+  const [walletBalance, setWalletBalance] = useState<number>(0)
+
+  // Fetch wallet balance from Solana
+  useEffect(() => {
+    async function fetchBalance() {
+      if (connected && publicKey && connection) {
+        try {
+          const balance = await connection.getBalance(publicKey)
+          setWalletBalance(balance)
+        } catch (error) {
+          console.error('Failed to fetch wallet balance:', error)
+        }
+      } else {
+        setWalletBalance(0)
+      }
+    }
+    fetchBalance()
+    // Refresh balance every 30 seconds
+    const interval = setInterval(fetchBalance, 30000)
+    return () => clearInterval(interval)
+  }, [connected, publicKey, connection])
 
   // Determine status
   const privacyStatus: StatusType = unspentNotes.length > 0 ? 'active' : 'inactive'
@@ -56,7 +79,7 @@ export function Dashboard() {
           transition={{ delay: 0.2 }}
         >
           <StatsCards
-            walletBalance={5.25e9}
+            walletBalance={walletBalance}
             shieldedBalance={shieldedBalanceSol}
             positionsValue={positionsValue}
             totalPnl={totalPnl}

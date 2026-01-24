@@ -12,6 +12,7 @@ import {
 } from '@solana/web3.js'
 import { BN } from '@coral-xyz/anchor'
 import { sha256 } from '../crypto/browserCrypto'
+import bs58 from 'bs58'
 
 // ============================================
 // Configuration
@@ -133,7 +134,7 @@ export class BrowserPnpClient {
           {
             memcmp: {
               offset: 0,
-              bytes: Buffer.from(discriminator).toString('base64'),
+              bytes: bs58.encode(discriminator),
             },
           },
         ],
@@ -271,7 +272,7 @@ export class BrowserPnpClient {
           {
             memcmp: {
               offset: 0,
-              bytes: Buffer.from(positionDiscriminator).toString('base64'),
+              bytes: bs58.encode(positionDiscriminator),
             },
           },
           {
