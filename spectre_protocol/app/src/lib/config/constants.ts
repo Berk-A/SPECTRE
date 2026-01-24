@@ -44,8 +44,9 @@ export const MAX_DEPOSIT_SOL = 1000
 // Feature-specific demo modes
 // PNP: Demo mode ON because program pnpxFx... doesn't exist on devnet
 export const PNP_DEMO_MODE = true
-// Privacy: Demo mode OFF - using BrowserPrivacyCash SDK with Web Crypto API
-export const PRIVACY_DEMO_MODE = false
+// Privacy: Demo mode ON - Real SDK built but PrivacyCash relayer has CORS/rate limits
+// and circuit input format needs matching. Use demo mode for stable demo experience.
+export const PRIVACY_DEMO_MODE = true
 // TEE: Demo mode OFF because MagicBlock delegation program IS deployed
 export const TEE_DEMO_MODE = false
 
