@@ -643,7 +643,10 @@ export class BrowserPrivacyCash {
      */
     private computeExtDataHash(extData: unknown): string {
         // Simplified - real implementation uses Poseidon hash
-        const str = JSON.stringify(extData)
+        // Use a replacer to handle BigInt values
+        const str = JSON.stringify(extData, (_, value) =>
+            typeof value === 'bigint' ? value.toString() : value
+        )
         const bytes = new TextEncoder().encode(str)
         let hash = BigInt(0)
         for (const byte of bytes) {
