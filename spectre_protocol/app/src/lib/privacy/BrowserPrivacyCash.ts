@@ -432,7 +432,6 @@ export class BrowserPrivacyCash {
 
         // Build inputs (2 required by circuit)
         let inputs: BrowserUtxo[]
-        let inputMerklePathIndices: number[][]
         let inputMerklePaths: string[][]
 
         if (existingUtxos.length === 0) {
@@ -441,11 +440,7 @@ export class BrowserPrivacyCash {
                 BrowserUtxo.dummy(keypair, this.hasher!),
                 BrowserUtxo.dummy(keypair, this.hasher!),
             ]
-            // For dummy inputs, use 20 zeros for path indices (binary path through tree)
-            inputMerklePathIndices = [
-                new Array(20).fill(0),
-                new Array(20).fill(0),
-            ]
+            // For dummy inputs, use zero-filled Merkle path elements
             inputMerklePaths = [
                 new Array(20).fill('0'),
                 new Array(20).fill('0'),
@@ -458,17 +453,19 @@ export class BrowserPrivacyCash {
                     ? existingUtxos[1]
                     : BrowserUtxo.dummy(keypair, this.hasher!),
             ]
-            // Fetch Merkle proofs
+            // Fetch Merkle proofs for real UTXOs
             const proofs = await Promise.all(
                 inputs.map((utxo) =>
                     utxo.amount > BigInt(0)
                         ? this.fetchMerkleProof(utxo.getCommitment())
-                        : { pathIndices: new Array(20).fill(0), pathElements: new Array(20).fill('0') }
+                        : { pathIndices: 0, pathElements: new Array(20).fill('0') }
                 )
             )
-            inputMerklePathIndices = proofs.map((p) => p.pathIndices)
             inputMerklePaths = proofs.map((p) => p.pathElements)
         }
+
+        // inPathIndices is the leaf index of each UTXO in the Merkle tree (flat array)
+        const inputMerklePathIndices = inputs.map((u) => u.index || 0)
 
         // Calculate amounts
         const inputSum = inputs.reduce((sum, u) => sum + u.amount, BigInt(0))
@@ -517,7 +514,7 @@ export class BrowserPrivacyCash {
             inAmount: inputs.map((u) => u.amount.toString()),
             inPrivateKey: inputs.map((u) => u.keypair.privkey.toString()),
             inBlinding: inputs.map((u) => u.blinding.toString()),
-            inPathIndices: inputMerklePathIndices.map((indices) => indices.map((idx) => idx.toString())),
+            inPathIndices: inputMerklePathIndices.map((idx) => idx.toString()),
             inPathElements: inputMerklePaths.map((path) => path.map((el) => el.toString())),
             outAmount: outputs.map((u) => u.amount.toString()),
             outBlinding: outputs.map((u) => u.blinding.toString()),
@@ -548,14 +545,18 @@ export class BrowserPrivacyCash {
                 : BrowserUtxo.dummy(keypair, this.hasher!),
         ]
 
-        // Fetch Merkle proofs
+        // Fetch Merkle proofs for real UTXOs
         const proofs = await Promise.all(
             inputs.map((utxo) =>
                 utxo.amount > BigInt(0)
                     ? this.fetchMerkleProof(utxo.getCommitment())
-                    : { pathIndices: new Array(20).fill(0), pathElements: new Array(20).fill('0') }
+                    : { pathIndices: 0, pathElements: new Array(20).fill('0') }
             )
         )
+
+        // inPathIndices is the leaf index of each UTXO (flat array of numbers)
+        const inputMerklePathIndices = inputs.map((u) => u.index || 0)
+        const inputMerklePaths = proofs.map((p) => p.pathElements)
 
         // Calculate amounts
         const inputSum = inputs.reduce((sum, u) => sum + u.amount, BigInt(0))
@@ -598,8 +599,8 @@ export class BrowserPrivacyCash {
             inAmount: inputs.map((u) => u.amount.toString()),
             inPrivateKey: inputs.map((u) => u.keypair.privkey),
             inBlinding: inputs.map((u) => u.blinding.toString()),
-            inPathIndices: proofs.map((p) => p.pathIndices.map((idx) => idx.toString())),
-            inPathElements: proofs.map((p) => p.pathElements),
+            inPathIndices: inputMerklePathIndices.map((idx) => idx.toString()),
+            inPathElements: inputMerklePaths.map((path) => path.map((el) => el.toString())),
             outAmount: outputs.map((u) => u.amount.toString()),
             outBlinding: outputs.map((u) => u.blinding.toString()),
             outPubkey: outputs.map((u) => u.keypair.pubkey),
@@ -631,10 +632,12 @@ export class BrowserPrivacyCash {
 
     /**
      * Fetch Merkle proof for a commitment
+     * Returns pathElements (sibling hashes) for the Merkle proof
+     * Note: pathIndices (leaf index) is stored on the UTXO itself
      */
     private async fetchMerkleProof(
         commitment: string
-    ): Promise<{ pathIndices: number[]; pathElements: string[] }> {
+    ): Promise<{ pathIndices: number; pathElements: string[] }> {
         const response = await fetch(
             `${RELAYER_API_URL}/tree/proof?commitment=${commitment}`
         )
