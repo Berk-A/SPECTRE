@@ -96,8 +96,6 @@ export interface SignTransactionFn {
 // Constants for transaction building
 const FEE_RECIPIENT = new PublicKey('AWexibGxNFKTa1b5R5MN4PJr9HWnWRwf8EW9g8cLx3dM')
 const ALT_ADDRESS = new PublicKey('HEN49U2ySJ85Vc78qprSW9y6mFDhs1NczRxyppNHjofe')
-const FEE_RECIPIENT = new PublicKey('AWexibGxNFKTa1b5R5MN4PJr9HWnWRwf8EW9g8cLx3dM')
-const ALT_ADDRESS = new PublicKey('HEN49U2ySJ85Vc78qprSW9y6mFDhs1NczRxyppNHjofe')
 const DEPOSIT_IX_DISCRIMINATOR = Buffer.from([242, 35, 198, 137, 82, 225, 242, 182])
 
 // Server proof request/response types
