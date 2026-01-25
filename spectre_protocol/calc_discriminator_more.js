@@ -19,8 +19,19 @@ const candidates = [
     'process_transaction',
     'top_up',
     'fund_tree',
+    'fund_tree',
     'new_account',
-    'create_account'
+    'create_account',
+    'initialize',
+    'init',
+    'configure',
+    'config',
+    'deposit_sol',
+    'deposit_spl',
+    'deposit_v1',
+    'transact_v1',
+    'relay',
+    'relay_deposit'
 ];
 
 candidates.forEach(name => {

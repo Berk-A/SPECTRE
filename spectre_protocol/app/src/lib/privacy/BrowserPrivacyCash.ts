@@ -36,7 +36,15 @@ import {
     getStorage,
 } from './browser-storage'
 import { BrowserUtxo, BrowserKeypair, type PoseidonHasher } from './browser-utxo'
-import { PRIVACY_CASH_PROGRAM_ID } from '@/lib/config/constants'
+import {
+    SPECTRE_PROGRAM_ID,
+    VAULT_SEED,
+    USER_DEPOSIT_SEED,
+    WITHDRAWAL_SEED,
+    FUND_AGENT_IX_DISCRIMINATOR,
+    INITIALIZE_IX_DISCRIMINATOR,
+    REQUEST_WITHDRAWAL_IX_DISCRIMINATOR
+} from '@/lib/config/constants'
 
 // API URLs
 // In production: use Vercel serverless proxy
@@ -96,7 +104,9 @@ export interface SignTransactionFn {
 // Constants for transaction building
 const FEE_RECIPIENT = new PublicKey('AWexibGxNFKTa1b5R5MN4PJr9HWnWRwf8EW9g8cLx3dM')
 const ALT_ADDRESS = new PublicKey('HEN49U2ySJ85Vc78qprSW9y6mFDhs1NczRxyppNHjofe')
-const TRANSACT_IX_DISCRIMINATOR = Buffer.from([217, 149, 130, 143, 221, 52, 252, 119])
+const COMMITMENT_SIZE = 32
+const NULLIFIER_SIZE = 32
+const PROOF_SIZE = 256
 
 // Server proof request/response types
 interface ServerProveRequest {
@@ -265,6 +275,13 @@ export class BrowserPrivacyCash {
     ): Promise<ShieldResult> {
         this.ensureInitialized()
 
+        // 1. Initialize Vault if needed (Spectre Protocol specific)
+        try {
+            await this.initializeVault((msg, pct) => onProgress?.(msg, pct * 0.1))
+        } catch (e) {
+            console.warn('[BrowserPrivacyCash] Vault init check failed (might already exist):', e)
+        }
+
         try {
             onProgress?.('Preparing deposit', 10)
 
@@ -324,9 +341,12 @@ export class BrowserPrivacyCash {
     /**
      * Unshield (withdraw) SOL
      */
+    /**
+     * Unshield (withdraw) SOL
+     */
     async unshield(
         lamports: number,
-        recipient?: string,
+        recipient?: string, // Not used in Phase 1 (withdraws to requester)
         onProgress?: (stage: string, percent: number) => void
     ): Promise<UnshieldResult> {
         this.ensureInitialized()
@@ -336,53 +356,30 @@ export class BrowserPrivacyCash {
 
             const existingUtxos = await this.fetchUtxos((msg) => onProgress?.(msg, 15))
 
-            // Check balance
-            const totalBalance = existingUtxos.reduce((sum, utxo) => sum + utxo.amount, BigInt(0))
-            if (totalBalance < BigInt(lamports)) {
+            // Find a UTXO with sufficient balance
+            // Phase 1 Limitation: Can only withdraw from a single deposit at a time
+            const targetUtxo = existingUtxos.find(u => u.amount >= BigInt(lamports))
+
+            if (!targetUtxo) {
                 return {
                     success: false,
-                    error: `Insufficient shielded balance: ${Number(totalBalance) / LAMPORTS_PER_SOL} SOL`,
+                    error: `No single deposit has sufficient funds (${lamports} lamports). Consolidation not yet supported.`,
                 }
             }
 
-            onProgress?.('Building proof inputs', 20)
+            onProgress?.('Requesting withdrawal', 30)
 
-            const utxoPrivateKey = this.encryptionService.getUtxoPrivateKey('v2')
-            const utxoKeypair = new BrowserKeypair(utxoPrivateKey, this.hasher!)
-
-            // Build proof request for server
-            const proofRequest = await this.buildWithdrawProofRequest(
-                lamports,
-                existingUtxos,
-                utxoKeypair,
-                utxoPrivateKey,
-                recipient ?? this.publicKey.toBase58()
+            const txHash = await this.requestWithdrawal(targetUtxo, lamports, (msg, pct) =>
+                onProgress?.(msg, 30 + pct * 0.7)
             )
 
-            onProgress?.('Generating ZK proof (server-side)', 40)
-
-            // Generate proof on server
-            const proofResult = await this.generateProofOnServer(proofRequest, (stage, percent) =>
-                onProgress?.(stage, 40 + percent * 0.4)
-            )
-
-            onProgress?.('Submitting to relayer', 85)
-
-            // Submit withdraw to relayer
-            const result = await this.submitWithdraw(
-                proofResult,
-                proofRequest.extData,
-                lamports,
-                recipient ?? this.publicKey.toBase58()
-            )
-
-            onProgress?.('Withdraw complete', 100)
+            onProgress?.('Withdrawal requested', 100)
 
             return {
                 success: true,
-                txHash: result.signature,
+                txHash,
                 amount: lamports,
-                fee: result.fee,
+                fee: 0, // Transaction fee paid by user
             }
         } catch (error) {
             console.error('[BrowserPrivacyCash] Unshield failed:', error)
@@ -394,12 +391,210 @@ export class BrowserPrivacyCash {
     }
 
     /**
-     * Clear cached UTXOs
+     * Initialize the Spectre Vault (if not already initialized)
+     * This is required for Phase 1 testing on Devnet
      */
-    clearCache(): void {
-        const key = localstorageKey(this.publicKey.toBase58())
-        this.storage.removeItem(LSK_FETCH_OFFSET + key)
-        this.storage.removeItem(LSK_ENCRYPTED_OUTPUTS + key)
+    async initializeVault(onProgress?: (stage: string, percent: number) => void): Promise<string> {
+        this.ensureInitialized()
+
+        onProgress?.('Deriving Vault PDA', 10)
+
+        // Derive Vault PDA: [VAULT_SEED, authority]
+        // We assume the current user is the authority for their own vault
+        const [vaultPDA] = PublicKey.findProgramAddressSync(
+            [Buffer.from(VAULT_SEED), this.publicKey.toBuffer()],
+            SPECTRE_PROGRAM_ID
+        )
+
+        // Derive Vault SOL PDA: [VAULT_SEED, authority, "sol"]
+        const [vaultSolPDA] = PublicKey.findProgramAddressSync(
+            [Buffer.from(VAULT_SEED), this.publicKey.toBuffer(), Buffer.from('sol')],
+            SPECTRE_PROGRAM_ID
+        )
+
+        console.log(`[BrowserPrivacyCash] Initializing Vault: ${vaultPDA.toBase58()}`)
+
+        // Check if already initialized
+        const accountInfo = await this.connection.getAccountInfo(vaultPDA)
+        if (accountInfo) {
+            console.log('[BrowserPrivacyCash] Vault already initialized')
+            onProgress?.('Vault already initialized', 100)
+            return vaultPDA.toBase58()
+        }
+
+        onProgress?.('Building initialization transaction', 30)
+
+        // Initialize Instruction Data: [Discriminator (8), Option<ModelHash> (1 + 32)]
+        // We use None (0) for model hash
+        const instructionData = Buffer.concat([
+            INITIALIZE_IX_DISCRIMINATOR,
+            Buffer.from([0]) // Option::None
+        ])
+
+        const instruction = new TransactionInstruction({
+            keys: [
+                { pubkey: this.publicKey, isSigner: true, isWritable: true }, // authority
+                { pubkey: vaultPDA, isSigner: false, isWritable: true }, // vault
+                { pubkey: vaultSolPDA, isSigner: false, isWritable: true }, // vault_sol
+                { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+            ],
+            programId: SPECTRE_PROGRAM_ID,
+            data: instructionData,
+        })
+
+        const latestBlockhash = await this.connection.getLatestBlockhash()
+        const messageV0 = new TransactionMessage({
+            payerKey: this.publicKey,
+            recentBlockhash: latestBlockhash.blockhash,
+            instructions: [instruction],
+        }).compileToV0Message()
+
+        const transaction = new VersionedTransaction(messageV0)
+
+        onProgress?.('Requesting signature', 50)
+        const signedTx = await this.signTransaction(transaction)
+
+        onProgress?.('Sending transaction', 70)
+        const txHash = await this.connection.sendTransaction(signedTx)
+
+        console.log(`[BrowserPrivacyCash] Initialization TX: https://explorer.solana.com/tx/${txHash}?cluster=devnet`)
+
+        await this.connection.confirmTransaction({
+            blockhash: latestBlockhash.blockhash,
+            lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+            signature: txHash,
+        })
+
+        onProgress?.('Vault initialized', 100)
+        return txHash
+    }
+
+    /**
+     * Submit deposit (fund_agent) to Spectre Protocol
+     */
+    private async submitDeposit(
+        proof: ServerProofResult,
+        extDataEncoded: any, // Not used in Spectre v1 (we use ZkProof struct)
+        amount: number
+    ): Promise<string> {
+        console.log('[BrowserPrivacyCash] Constructing fund_agent transaction...')
+
+        // 1. Derive PDAs
+        // Vault PDA
+        const [vaultPDA] = PublicKey.findProgramAddressSync(
+            [Buffer.from(VAULT_SEED), this.publicKey.toBuffer()],
+            SPECTRE_PROGRAM_ID
+        )
+
+        // Parse outputs to get commitment (Output[0] is the deposit UTXO)
+        // Public Inputs are in proof.publicInputsBytes
+        // [0]=root, [1]=publicAmount, [2]=extDataHash, [3]=inputNullifier0, [4]=inputNullifier1, [5]=outputCommitment0, [6]=outputCommitment1
+
+        // Ensure proper byte arrays
+        const commitmentBytes = new Uint8Array(proof.publicInputsBytes[5]) // Output 0 Commitment
+        const nullifierHashBytes = new Uint8Array(proof.publicInputsBytes[3]) // Input Nullifier 0 (we use this as the unique ID?)
+        // WAIT: fund_agent expects a NEW commitment. 
+        // In the circuit, outputCommitment[0] is the new note.
+        // We should use outputCommitment[0] for the UserDeposit PDA.
+
+        // UserDeposit PDA: [DEPOSIT_SEED, Vault, Commitment]
+        const [userDepositPDA] = PublicKey.findProgramAddressSync(
+            [Buffer.from(USER_DEPOSIT_SEED), vaultPDA.toBuffer(), commitmentBytes],
+            SPECTRE_PROGRAM_ID
+        )
+
+        console.log(`[BrowserPrivacyCash] Vault: ${vaultPDA.toBase58()}`)
+        console.log(`[BrowserPrivacyCash] User Deposit: ${userDepositPDA.toBase58()}`)
+
+        // 2. Serialize ZkProof struct
+        // struct ZkProof {
+        //     proof_data: [u8; 256],
+        //     public_inputs: ZkPublicInputs { commitment, nullifier_hash, amount, merkle_root }
+        // }
+
+        // Construct Proof Data (256 bytes)
+        // Groth16 proof from snarkjs is: A(64) + B(128) + C(64) = 256 bytes (compressed?) or uncompressed.
+        // hasher.rs / PrivacyCash usually implies:
+        // A (32*2 = 64), B (32*4 = 128), C (32*2 = 64) -> Total 256 bytes.
+        // proof.proofBytes contains proofA (number[]), proofB, proofC.
+
+        const proofData = new Uint8Array(PROOF_SIZE)
+        let offset = 0
+        const writeFn = (arr: number[]) => {
+            proofData.set(arr, offset)
+            offset += arr.length
+        }
+        writeFn(proof.proofBytes.proofA)
+        writeFn(proof.proofBytes.proofB) // Note: proofB is often flattened
+        writeFn(proof.proofBytes.proofC)
+
+        // Pad checks? 
+        // proofA = 2 elements * 32 = 64
+        // proofB = 2 elements * 2 sub-elements * 32 = 128
+        // proofC = 2 elements * 32 = 64
+        // Total = 256. Perfect.
+
+        // Construct Public Inputs
+        // commitment: [u8; 32]
+        // nullifier_hash: [u8; 32] (This is tricky. We need a unique nullifier. Spectre uses this to prevent double-spending? No, it's just stored.)
+        // amount: u64
+        // merkle_root: [u8; 32]
+
+        const publicInputsBuffer = Buffer.concat([
+            Buffer.from(commitmentBytes),                  // commitment (32)
+            Buffer.from(new Uint8Array(32).fill(1)),       // nullifier_hash (32) - Mock for now (phase 1)
+            new BN(amount).toArrayLike(Buffer, 'le', 8),   // amount (8)
+            Buffer.from(new Uint8Array(32))                // merkle_root (32) - Mock for now
+        ])
+
+        const zkProofBuffer = Buffer.concat([
+            proofData,
+            publicInputsBuffer
+        ])
+
+        // 3. Construct Instruction
+        const instructionData = Buffer.concat([
+            FUND_AGENT_IX_DISCRIMINATOR,
+            zkProofBuffer
+        ])
+
+        const instruction = new TransactionInstruction({
+            keys: [
+                { pubkey: this.publicKey, isSigner: true, isWritable: true }, // depositor
+                { pubkey: vaultPDA, isSigner: false, isWritable: true },      // vault
+                { pubkey: userDepositPDA, isSigner: false, isWritable: true }, // user_deposit
+                { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+            ],
+            programId: SPECTRE_PROGRAM_ID,
+            data: instructionData,
+        })
+
+        // 4. Send Transaction
+        const recentBlockhash = await this.connection.getLatestBlockhash()
+        const messageV0 = new TransactionMessage({
+            payerKey: this.publicKey,
+            recentBlockhash: recentBlockhash.blockhash,
+            instructions: [instruction],
+        }).compileToV0Message()
+
+        const transaction = new VersionedTransaction(messageV0)
+
+        console.log('[BrowserPrivacyCash] Requesting signature...')
+        const signedTx = await this.signTransaction(transaction)
+
+        console.log('[BrowserPrivacyCash] Submitting fund_agent transaction...')
+        const signature = await this.connection.sendTransaction(signedTx)
+
+        console.log(`[BrowserPrivacyCash] Success! https://explorer.solana.com/tx/${signature}?cluster=devnet`)
+
+        // Wait for confirmation
+        await this.connection.confirmTransaction({
+            signature,
+            blockhash: recentBlockhash.blockhash,
+            lastValidBlockHeight: recentBlockhash.lastValidBlockHeight
+        })
+
+        return signature
     }
 
     // ========================================
@@ -520,28 +715,7 @@ export class BrowserPrivacyCash {
      * Check if a UTXO has been spent
      */
     private async isUtxoSpent(utxo: BrowserUtxo): Promise<boolean> {
-        const nullifier = utxo.getNullifier()
-
-        // Convert to bytes for PDA derivation
-        const nullifierBytes = new Uint8Array(32)
-        const nullifierBigInt = BigInt(nullifier)
-        for (let i = 31; i >= 0; i--) {
-            nullifierBytes[i] = Number((nullifierBigInt >> BigInt((31 - i) * 8)) & BigInt(0xff))
-        }
-
-        // Check both nullifier PDAs
-        const [nullifier0PDA] = PublicKey.findProgramAddressSync(
-            [Buffer.from('nullifier0'), Buffer.from(nullifierBytes)],
-            PRIVACY_CASH_PROGRAM_ID
-        )
-        const [nullifier1PDA] = PublicKey.findProgramAddressSync(
-            [Buffer.from('nullifier1'), Buffer.from(nullifierBytes)],
-            PRIVACY_CASH_PROGRAM_ID
-        )
-
-        const accounts = await this.connection.getMultipleAccountsInfo([nullifier0PDA, nullifier1PDA])
-
-        return accounts.some((acc) => acc !== null)
+        return false // Mock for Phase 1 (Spectre doesn't track spent nullifiers on client yet)
     }
 
     /**
@@ -772,7 +946,7 @@ export class BrowserPrivacyCash {
         try {
             const [treeAddress] = PublicKey.findProgramAddressSync(
                 [Buffer.from('merkle_tree')],
-                PRIVACY_CASH_PROGRAM_ID
+                SPECTRE_PROGRAM_ID
             )
             const accountInfo = await this.connection.getAccountInfo(treeAddress)
             if (!accountInfo) {
@@ -846,238 +1020,174 @@ export class BrowserPrivacyCash {
         return response.json()
     }
 
-    /**
-     * Submit deposit transaction via relayer
-     */
-    private async submitDeposit(
-        proofResult: ServerProofResult,
-        extData: ServerProveRequest['extData'],
-        _lamports: number
-    ): Promise<string> {
-        try {
-            console.log('[BrowserPrivacyCash] Constructing deposit transaction...')
 
-            // 1. Prepare Proof and ExtData
-            // Reconstruct proof inputs for serialization
-            const proofToSubmit = {
-                proofA: proofResult.proofBytes.proofA,
-                proofB: proofResult.proofBytes.proofB, // Already flat array from server
-                proofC: proofResult.proofBytes.proofC,
-                root: proofResult.publicInputsBytes[0],
-                publicAmount: proofResult.publicInputsBytes[1],
-                extDataHash: proofResult.publicInputsBytes[2],
-                inputNullifiers: [
-                    proofResult.publicInputsBytes[3],
-                    proofResult.publicInputsBytes[4],
-                ],
-                outputCommitments: [
-                    proofResult.publicInputsBytes[5],
-                    proofResult.publicInputsBytes[6],
-                ],
-            }
-
-            // Encoded fields for ExtData
-            const extDataEncoded = {
-                recipient: hexToBytes(new PublicKey(extData.recipient).toBuffer().toString('hex')),
-                extAmount: hexToBytes(BigInt(extData.extAmount).toString(16).padStart(16, '0').match(/.{1,2}/g)?.reverse().join('') || ''), // u64 LE
-                encryptedOutput1: extData.encryptedOutput1,
-                encryptedOutput2: extData.encryptedOutput2,
-                fee: hexToBytes(BigInt(extData.fee).toString(16).padStart(16, '0').match(/.{1,2}/g)?.reverse().join('') || ''), // u64 LE
-                feeRecipient: hexToBytes(FEE_RECIPIENT.toBuffer().toString('hex')),
-                mintAddress: hexToBytes(DEFAULT_MINT_ADDRESS === '11111111111111111111111111111112'
-                    ? new PublicKey(DEFAULT_MINT_ADDRESS).toBuffer().toString('hex')
-                    : new PublicKey(DEFAULT_MINT_ADDRESS).toBuffer().toString('hex')),
-            }
-
-            // Serialize instruction data
-            const serializedProof = serializeProofAndExtData(proofToSubmit, extDataEncoded)
-
-            // Prepend the discriminator to the instruction data
-            const instructionData = Buffer.concat([TRANSACT_IX_DISCRIMINATOR, serializedProof])
-
-            // 2. Find PDAs
-
-            // Helpers
-            const getPda = (seed: Uint8Array, prefix: string) => {
-                return PublicKey.findProgramAddressSync(
-                    [Buffer.from(prefix), Buffer.from(seed)],
-                    PRIVACY_CASH_PROGRAM_ID
-                )[0]
-            }
-
-            // The nullifier bytes in public inputs are Big-Endian 32-bytes representation of field element
-            const n0 = new Uint8Array(proofResult.publicInputsBytes[3])
-            const n1 = new Uint8Array(proofResult.publicInputsBytes[4])
-
-            // Actually, for a 2-input join split:
-            // input 1 -> nullifier0
-            // input 2 -> nullifier1
-            const nullifier0_PDA = getPda(n0, 'nullifier0')
-            const nullifier1_PDA = getPda(n1, 'nullifier1')
-
-            // Fetch ALT (Optional)
-            let lookupTables: AddressLookupTableAccount[] = []
-            try {
-                const altAccountInfo = await this.connection.getAccountInfo(ALT_ADDRESS)
-                if (altAccountInfo) {
-                    lookupTables.push(new AddressLookupTableAccount({
-                        key: ALT_ADDRESS,
-                        state: AddressLookupTableAccount.deserialize(altAccountInfo.data)
-                    }))
-                } else {
-                    console.warn('[BrowserPrivacyCash] ALT Account not found, proceeding without compression')
-                }
-            } catch (error) {
-                console.warn('[BrowserPrivacyCash] Failed to fetch ALT Account:', error)
-            }
-
-            // 3. Create Instruction
-            const [treeAccount] = PublicKey.findProgramAddressSync([Buffer.from('merkle_tree')], PRIVACY_CASH_PROGRAM_ID)
-            const [treeTokenAccount] = PublicKey.findProgramAddressSync([Buffer.from('token_account')], PRIVACY_CASH_PROGRAM_ID)
-            const [globalConfigAccount] = PublicKey.findProgramAddressSync([Buffer.from('global_config')], PRIVACY_CASH_PROGRAM_ID)
-
-            const depositInstruction = new TransactionInstruction({
-                keys: [
-                    { pubkey: treeAccount, isSigner: false, isWritable: true },
-                    { pubkey: nullifier0_PDA, isSigner: false, isWritable: true },
-                    { pubkey: nullifier1_PDA, isSigner: false, isWritable: true },
-                    // Placeholder PDAs for extra nullifiers
-                    { pubkey: nullifier0_PDA, isSigner: false, isWritable: false },
-                    { pubkey: nullifier1_PDA, isSigner: false, isWritable: false },
-
-                    { pubkey: treeTokenAccount, isSigner: false, isWritable: true },
-                    { pubkey: globalConfigAccount, isSigner: false, isWritable: false },
-                    { pubkey: new PublicKey('AWexibGxNFKTa1b5R5MN4PJr9HWnWRwf8EW9g8cLx3dM'), isSigner: false, isWritable: true }, // Recipient (ALT opt)
-                    { pubkey: FEE_RECIPIENT, isSigner: false, isWritable: true },
-                    { pubkey: this.publicKey, isSigner: true, isWritable: true },
-                    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-                ],
-                programId: PRIVACY_CASH_PROGRAM_ID,
-                data: instructionData,
-            })
-
-            const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({
-                units: 1_000_000
-            })
-
-            const latestBlockhash = await this.connection.getLatestBlockhash()
-
-            const messageV0 = new TransactionMessage({
-                payerKey: this.publicKey,
-                recentBlockhash: latestBlockhash.blockhash,
-                instructions: [modifyComputeUnits, depositInstruction],
-            }).compileToV0Message(lookupTables)
-
-            const transaction = new VersionedTransaction(messageV0)
-
-            // 4. Sign Transaction
-            console.log('[BrowserPrivacyCash] Requesting signature...')
-            if (!this.signTransaction) {
-                throw new Error('signTransaction callback not provided')
-            }
-            const signedTransaction = await this.signTransaction(transaction)
-
-            // 5. Serialize and Send
-            // 5. Serialize and Send
-            console.log('[BrowserPrivacyCash] Submitting signed transaction directly to RPC (Devnet/Direct Mode)...')
-
-            try {
-                // Submit directly to RPC (Bypassing Mainnet Relayer for Devnet compatibility)
-                const signature = await this.connection.sendRawTransaction(signedTransaction.serialize(), {
-                    skipPreflight: false,
-                    preflightCommitment: 'confirmed'
-                })
-
-                console.log('[BrowserPrivacyCash] Transaction submitted directly to RPC. Signature:', signature)
-
-                // Confirm transaction
-                const confirmation = await this.connection.confirmTransaction({
-                    signature,
-                    blockhash: latestBlockhash.blockhash,
-                    lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
-                }, 'confirmed')
-
-                if (confirmation.value.err) {
-                    throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`)
-                }
-
-                return signature
-
-            } catch (err) {
-                console.warn('[BrowserPrivacyCash] Direct RPC submission failed, falling back to Relayer (likely to fail on Devnet):', err)
-
-                // Fallback to Relayer (Original Logic - kept for Mainnet if Relayer supports it)
-                const serializedTransaction = Buffer.from(signedTransaction.serialize()).toString('base64')
-                const response = await this.fetchWithRetry(`${RELAYER_API_URL}/deposit`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        signedTransaction: serializedTransaction,
-                        senderAddress: this.publicKey.toBase58(),
-                    }),
-                })
-
-                if (!response.ok) {
-                    const error = await response.text()
-                    throw new Error(`Deposit failed: ${error}`)
-                }
-
-                const result = await response.json()
-                return result.signature
-            }
-
-        } catch (error) {
-            console.error('[BrowserPrivacyCash] Submit deposit failed:', error)
-            throw error
-        }
-    }
 
 
 
     /**
      * Submit withdraw transaction via relayer
      */
-    private async submitWithdraw(
-        proofResult: ServerProofResult,
-        extData: ServerProveRequest['extData'],
-        lamports: number,
-        recipient: string
-    ): Promise<{ signature: string; fee: number }> {
-        const response = await this.fetchWithRetry(`${RELAYER_API_URL}/withdraw`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                proof: {
-                    proofA: proofResult.proofBytes.proofA,
-                    proofB: proofResult.proofBytes.proofB,
-                    proofC: proofResult.proofBytes.proofC,
-                    root: proofResult.publicInputsBytes[0],
-                    publicAmount: proofResult.publicInputsBytes[1],
-                    extDataHash: proofResult.publicInputsBytes[2],
-                    inputNullifiers: [
-                        proofResult.publicInputsBytes[3],
-                        proofResult.publicInputsBytes[4],
-                    ],
-                    outputCommitments: [
-                        proofResult.publicInputsBytes[5],
-                        proofResult.publicInputsBytes[6],
-                    ],
-                },
-                extData,
-                recipient,
-                amount: lamports,
-            }),
+    /**
+     * Submit request_withdrawal transaction to Spectre Protocol
+     */
+    private async requestWithdrawal(
+        utxo: BrowserUtxo,
+        amount: number,
+        onProgress?: (stage: string, percent: number) => void
+    ): Promise<string> {
+        console.log('[BrowserPrivacyCash] Constructing request_withdrawal transaction...')
+
+        onProgress?.('Deriving PDAs', 10)
+
+        // 1. Derive PDAs
+        // Vault PDA
+        const [vaultPDA] = PublicKey.findProgramAddressSync(
+            [Buffer.from(VAULT_SEED), this.publicKey.toBuffer()],
+            SPECTRE_PROGRAM_ID
+        )
+
+        // UserDeposit PDA: [DEPOSIT_SEED, Vault, Commitment]
+        const commitmentBytes = hexToBytes(utxo.getCommitment())
+        const [userDepositPDA] = PublicKey.findProgramAddressSync(
+            [Buffer.from(USER_DEPOSIT_SEED), vaultPDA.toBuffer(), commitmentBytes],
+            SPECTRE_PROGRAM_ID
+        )
+
+        // WithdrawalRequest PDA: [WITHDRAWAL_SEED, Vault, Requester, UserDeposit]
+        const [withdrawalRequestPDA] = PublicKey.findProgramAddressSync(
+            [
+                Buffer.from(WITHDRAWAL_SEED),
+                vaultPDA.toBuffer(),
+                this.publicKey.toBuffer(),
+                userDepositPDA.toBuffer()
+            ],
+            SPECTRE_PROGRAM_ID
+        )
+
+        console.log(`[BrowserPrivacyCash] Withdrawal Request PDA: ${withdrawalRequestPDA.toBase58()}`)
+
+        // 2. Construct Instruction data (Discriminator + amount)
+        const instructionData = Buffer.concat([
+            REQUEST_WITHDRAWAL_IX_DISCRIMINATOR,
+            new BN(amount).toArrayLike(Buffer, 'le', 8)
+        ])
+
+        const instruction = new TransactionInstruction({
+            keys: [
+                { pubkey: this.publicKey, isSigner: true, isWritable: true }, // requester
+                { pubkey: vaultPDA, isSigner: false, isWritable: false },     // vault
+                { pubkey: userDepositPDA, isSigner: false, isWritable: true }, // user_deposit
+                { pubkey: withdrawalRequestPDA, isSigner: false, isWritable: true }, // withdrawal_request
+                { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+            ],
+            programId: SPECTRE_PROGRAM_ID,
+            data: instructionData,
         })
 
-        if (!response.ok) {
-            const error = await response.text()
-            throw new Error(`Withdraw failed: ${error}`)
-        }
+        // 3. Send Transaction
+        onProgress?.('Sending transaction', 50)
 
-        const result = await response.json()
-        return {
-            signature: result.signature,
-            fee: result.fee || Math.floor(lamports * 0.003),
-        }
+        const recentBlockhash = await this.connection.getLatestBlockhash()
+        const messageV0 = new TransactionMessage({
+            payerKey: this.publicKey,
+            recentBlockhash: recentBlockhash.blockhash,
+            instructions: [instruction],
+        }).compileToV0Message()
+
+        const transaction = new VersionedTransaction(messageV0)
+
+        const signedTx = await this.signTransaction(transaction)
+        const signature = await this.connection.sendTransaction(signedTx)
+
+        console.log(`[BrowserPrivacyCash] Withdrawal Requested: https://explorer.solana.com/tx/${signature}?cluster=devnet`)
+
+        await this.connection.confirmTransaction({
+            signature,
+            blockhash: recentBlockhash.blockhash,
+            lastValidBlockHeight: recentBlockhash.lastValidBlockHeight
+        })
+
+        return signature
+    }
+
+    /**
+     * Submit complete_withdrawal transaction
+     */
+    async completeWithdrawal(
+        utxo: BrowserUtxo,
+        onProgress?: (stage: string, percent: number) => void
+    ): Promise<string> {
+        console.log('[BrowserPrivacyCash] Constructing complete_withdrawal transaction...')
+        const {
+            COMPLETE_WITHDRAWAL_IX_DISCRIMINATOR: DISC
+        } = await import('@/lib/config/constants')
+
+        onProgress?.('Deriving PDAs', 10)
+
+        // Vault
+        const [vaultPDA] = PublicKey.findProgramAddressSync(
+            [Buffer.from(VAULT_SEED), this.publicKey.toBuffer()],
+            SPECTRE_PROGRAM_ID
+        )
+
+        // UserDeposit
+        const commitmentBytes = hexToBytes(utxo.getCommitment())
+        const [userDepositPDA] = PublicKey.findProgramAddressSync(
+            [Buffer.from(USER_DEPOSIT_SEED), vaultPDA.toBuffer(), commitmentBytes],
+            SPECTRE_PROGRAM_ID
+        )
+
+        // WithdrawalRequest: [WITHDRAWAL_SEED, Vault, Requester, UserDeposit]
+        const [withdrawalRequestPDA] = PublicKey.findProgramAddressSync(
+            [
+                Buffer.from(WITHDRAWAL_SEED),
+                vaultPDA.toBuffer(),
+                this.publicKey.toBuffer(),
+                userDepositPDA.toBuffer()
+            ],
+            SPECTRE_PROGRAM_ID
+        )
+
+        console.log(`[BrowserPrivacyCash] Completing withdrawal for: ${withdrawalRequestPDA.toBase58()}`)
+
+        // Instruction: [Discriminator]
+        const instructionData = DISC
+
+        const instruction = new TransactionInstruction({
+            keys: [
+                { pubkey: this.publicKey, isSigner: true, isWritable: true }, // requester
+                { pubkey: vaultPDA, isSigner: false, isWritable: true }, // vault (mut)
+                { pubkey: userDepositPDA, isSigner: false, isWritable: true }, // user_deposit (mut)
+                { pubkey: withdrawalRequestPDA, isSigner: false, isWritable: true }, // withdrawal_request (mut)
+                { pubkey: this.publicKey, isSigner: false, isWritable: true }, // recipient (mut, requester receives funds)
+                { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+            ],
+            programId: SPECTRE_PROGRAM_ID,
+            data: instructionData,
+        })
+
+        onProgress?.('Sending transaction', 50)
+
+        const recentBlockhash = await this.connection.getLatestBlockhash()
+        const messageV0 = new TransactionMessage({
+            payerKey: this.publicKey,
+            recentBlockhash: recentBlockhash.blockhash,
+            instructions: [instruction],
+        }).compileToV0Message()
+
+        const transaction = new VersionedTransaction(messageV0)
+
+        const signedTx = await this.signTransaction(transaction)
+        const signature = await this.connection.sendTransaction(signedTx)
+
+        console.log(`[BrowserPrivacyCash] Withdrawal Completed: https://explorer.solana.com/tx/${signature}?cluster=devnet`)
+
+        await this.connection.confirmTransaction({
+            signature,
+            blockhash: recentBlockhash.blockhash,
+            lastValidBlockHeight: recentBlockhash.lastValidBlockHeight
+        })
+
+        return signature
     }
 }

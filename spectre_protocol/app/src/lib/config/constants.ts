@@ -19,6 +19,17 @@ export const DELEGATION_PROGRAM_ID = new PublicKey(
   'DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh'
 )
 
+// PDA Seeds
+export const VAULT_SEED = 'spectre_vault'
+export const USER_DEPOSIT_SEED = 'user_deposit'
+export const WITHDRAWAL_SEED = 'withdrawal'
+
+// Instruction Discriminators
+export const INITIALIZE_IX_DISCRIMINATOR = Buffer.from([175, 175, 109, 31, 13, 152, 155, 237])
+export const FUND_AGENT_IX_DISCRIMINATOR = Buffer.from([108, 252, 24, 134, 59, 166, 124, 67])
+export const REQUEST_WITHDRAWAL_IX_DISCRIMINATOR = Buffer.from([251, 85, 121, 205, 56, 201, 12, 177])
+export const COMPLETE_WITHDRAWAL_IX_DISCRIMINATOR = Buffer.from([107, 98, 134, 131, 74, 120, 174, 121])
+
 // Token mints
 export const USDC_DEVNET = new PublicKey(
   '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'
