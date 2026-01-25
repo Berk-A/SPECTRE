@@ -1,8 +1,10 @@
 /**
  * Browser-compatible Poseidon Hasher
- * 
- * Uses circomlibjs for Poseidon hashing instead of @lightprotocol/hasher.rs
- * to avoid Node.js polyfill issues in browser builds.
+ *
+ * Uses circomlibjs for Poseidon hashing in the browser.
+ *
+ * IMPORTANT: circomlibjs and @lightprotocol/hasher.rs MAY produce different
+ * hashes for the same inputs. If proofs fail, this is a likely culprit.
  */
 
 // @ts-ignore - circomlibjs doesn't have TypeScript types

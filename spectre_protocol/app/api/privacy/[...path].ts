@@ -18,6 +18,34 @@ const requestCounts = new Map<string, { count: number; resetAt: number }>()
 const RATE_LIMIT = 100 // requests per minute
 const RATE_WINDOW = 60 * 1000 // 1 minute in ms
 
+// Response cache for frequently accessed endpoints
+const responseCache = new Map<string, { data: unknown; expiresAt: number }>()
+const CACHE_TTL = {
+    'tree/state': 30 * 1000, // Cache tree state for 30 seconds
+    'utxos/range': 10 * 1000, // Cache UTXO ranges for 10 seconds
+}
+
+function getCachedResponse(path: string): unknown | null {
+    const entry = responseCache.get(path)
+    if (entry && Date.now() < entry.expiresAt) {
+        console.log(`[Proxy] Cache hit for ${path}`)
+        return entry.data
+    }
+    return null
+}
+
+function setCachedResponse(path: string, data: unknown): void {
+    // Determine TTL based on path
+    let ttl = 5000 // Default 5 seconds
+    for (const [pattern, patternTtl] of Object.entries(CACHE_TTL)) {
+        if (path.includes(pattern)) {
+            ttl = patternTtl
+            break
+        }
+    }
+    responseCache.set(path, { data, expiresAt: Date.now() + ttl })
+}
+
 function checkRateLimit(ip: string): boolean {
     const now = Date.now()
     const entry = requestCounts.get(ip)
@@ -62,8 +90,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const pathString = Array.isArray(path) ? path.join('/') : path
     const queryString = new URL(req.url || '', 'http://localhost').search
     const targetUrl = `${RELAYER_URL}/${pathString}${queryString}`
+    const cacheKey = `${pathString}${queryString}`
 
     console.log(`[Proxy] ${req.method} ${targetUrl}`)
+
+    // Check cache for GET requests
+    if (req.method === 'GET') {
+        const cached = getCachedResponse(cacheKey)
+        if (cached) {
+            return res.status(200).json(cached)
+        }
+    }
 
     try {
         const fetchOptions: RequestInit = {
@@ -96,6 +133,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const contentType = response.headers.get('content-type')
         if (contentType?.includes('application/json')) {
             const data = await response.json()
+            // Cache successful GET responses
+            if (req.method === 'GET') {
+                setCachedResponse(cacheKey, data)
+            }
             return res.status(200).json(data)
         } else {
             const text = await response.text()
