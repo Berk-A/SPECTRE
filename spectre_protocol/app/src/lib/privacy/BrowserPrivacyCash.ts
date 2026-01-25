@@ -858,13 +858,21 @@ export class BrowserPrivacyCash {
             const nullifier0_PDA = getPda(n0, 'nullifier0')
             const nullifier1_PDA = getPda(n1, 'nullifier1')
 
-            // Fetch ALT
-            const altAccountInfo = await this.connection.getAccountInfo(ALT_ADDRESS)
-            if (!altAccountInfo) throw new Error('ALT Account not found')
-            const altAccount = new AddressLookupTableAccount({
-                key: ALT_ADDRESS,
-                state: AddressLookupTableAccount.deserialize(altAccountInfo.data)
-            })
+            // Fetch ALT (Optional)
+            let lookupTables: AddressLookupTableAccount[] = []
+            try {
+                const altAccountInfo = await this.connection.getAccountInfo(ALT_ADDRESS)
+                if (altAccountInfo) {
+                    lookupTables.push(new AddressLookupTableAccount({
+                        key: ALT_ADDRESS,
+                        state: AddressLookupTableAccount.deserialize(altAccountInfo.data)
+                    }))
+                } else {
+                    console.warn('[BrowserPrivacyCash] ALT Account not found, proceeding without compression')
+                }
+            } catch (error) {
+                console.warn('[BrowserPrivacyCash] Failed to fetch ALT Account:', error)
+            }
 
             // 3. Create Instruction
             const [treeAccount] = PublicKey.findProgramAddressSync([Buffer.from('merkle_tree')], PRIVACY_CASH_PROGRAM_ID)
@@ -901,7 +909,7 @@ export class BrowserPrivacyCash {
                 payerKey: this.publicKey,
                 recentBlockhash: latestBlockhash.blockhash,
                 instructions: [modifyComputeUnits, depositInstruction],
-            }).compileToV0Message([altAccount])
+            }).compileToV0Message(lookupTables)
 
             const transaction = new VersionedTransaction(messageV0)
 
