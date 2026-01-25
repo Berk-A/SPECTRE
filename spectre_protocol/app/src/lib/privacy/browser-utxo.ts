@@ -119,12 +119,23 @@ export class BrowserUtxo {
 
     /**
      * Convert mint address to field element
+     * MATCHES SDK LOGIC from privacycash (31 bytes)
      */
     private getMintAddressField(): string {
+        if (this.mintAddress === '11111111111111111111111111111112') {
+            return this.mintAddress
+        }
+
         const bytes = this.base58Decode(this.mintAddress)
-        const hex = bytesToHex(bytes)
-        const bigint = BigInt('0x' + hex)
-        return (bigint % FIELD_SIZE).toString()
+        // Take first 31 bytes
+        const sliced = bytes.slice(0, 31)
+
+        let value = BigInt(0)
+        for (let i = 0; i < sliced.length; i++) {
+            value = (value << BigInt(8)) | BigInt(sliced[i])
+        }
+
+        return value.toString()
     }
 
     /**

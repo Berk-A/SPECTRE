@@ -126,15 +126,31 @@ async function loadCircuits(): Promise<{ wasm: Uint8Array; zkey: Uint8Array }> {
 /**
  * Compute mint address field element from PublicKey
  */
+/**
+ * Compute mint address field element from PublicKey
+ * MATCHES SDK LOGIC: privacycash/src/utils/utils.ts
+ */
 function getMintAddressField(mintPubkey: PublicKey): string {
-    // Convert mint address to a field element
-    // Use first 16 bytes of pubkey as BigInt, modulo field size
-    const bytes = mintPubkey.toBytes()
-    let value = BigInt(0)
-    for (let i = 0; i < Math.min(16, bytes.length); i++) {
-        value = (value << BigInt(8)) | BigInt(bytes[i])
+    const mintStr = mintPubkey.toBase58()
+
+    // Special case for SOL (system program)
+    if (mintStr === '11111111111111111111111111111112') {
+        return mintStr
     }
-    return (value % BigInt(FIELD_SIZE.toString())).toString()
+
+    // For SPL tokens (USDC, USDT, etc): use first 31 bytes (248 bits)
+    // This provides better collision resistance than 8 bytes while still fitting in the field
+    const mintBytes = mintPubkey.toBytes()
+
+    // SDK uses BN ('bn.js') with 'be' (Big Endian)
+    // We recreate that logic here
+    const sliced = mintBytes.slice(0, 31)
+    let value = BigInt(0)
+    for (let i = 0; i < sliced.length; i++) {
+        value = (value << BigInt(8)) | BigInt(sliced[i])
+    }
+
+    return value.toString()
 }
 
 /**
