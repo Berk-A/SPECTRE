@@ -128,20 +128,18 @@ export function serializeProofAndExtData(proof: any, extData: any): Buffer {
     const extDataBytes = serializeExtData(new ExtData(extData))
 
     // 2. Serialize Fixed Proof Parts (everything except extData)
-    // We construct a buffer manually to match the Rust struct layout
-    // struct DepositInstruction {
-    //   proofA: [u8; 32],
-    //   proofB: [u8; 64],
-    //   proofC: [u8; 32],
-    //   root: [u8; 32],
-    //   publicAmount: [u8; 32],
-    //   extDataHash: [u8; 32],
-    //   inputNullifiers: [[u8; 32]; 2],
-    //   outputCommitments: [[u8; 32]; 2],
-    //   extData: ExtData
-    // }
+    // Calculate size dynamically based on input arrays
+    let proofSize = 0
+    proofSize += proof.proofA.length
+    proofSize += proof.proofB.length
+    proofSize += proof.proofC.length
+    proofSize += proof.root.length
+    proofSize += proof.publicAmount.length
+    proofSize += proof.extDataHash.length
 
-    const proofSize = 32 + 64 + 32 + 32 + 32 + 32 + (32 * 2) + (32 * 2)
+    proof.inputNullifiers.forEach((n: any) => proofSize += n.length)
+    proof.outputCommitments.forEach((c: any) => proofSize += c.length)
+
     const buffer = new Uint8Array(proofSize + extDataBytes.length)
     let offset = 0
 
@@ -153,7 +151,7 @@ export function serializeProofAndExtData(proof: any, extData: any): Buffer {
     }
 
     write(proof.proofA)
-    write(proof.proofB) // proofB is already flattened 64 bytes
+    write(proof.proofB)
     write(proof.proofC)
     write(proof.root)
     write(proof.publicAmount)
