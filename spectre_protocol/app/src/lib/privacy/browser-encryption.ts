@@ -1,9 +1,5 @@
-/**
- * Browser-compatible Encryption Service for PrivacyCash
- * Uses Web Crypto API instead of Node.js crypto module
- */
-
 import { keccak256 } from '@ethersproject/keccak256'
+
 
 // Version identifier for encryption scheme (8-byte version)
 const ENCRYPTION_VERSION_V2 = new Uint8Array([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02])
@@ -53,6 +49,156 @@ function concatBytes(...arrays: Uint8Array[]): Uint8Array {
         offset += arr.length
     }
     return result
+}
+
+// -----------------------------------------------------------
+// Borsh Schemas for Transaction Instruction
+// -----------------------------------------------------------
+
+class DepositArgs {
+    proofA: Uint8Array
+    proofB: Uint8Array
+    proofC: Uint8Array
+    root: Uint8Array
+    publicAmount: Uint8Array
+    extDataHash: Uint8Array
+    inputNullifiers: Uint8Array[]
+    outputCommitments: Uint8Array[]
+    extData: ExtData
+
+    constructor(fields: any) {
+        this.proofA = fields.proofA
+        this.proofB = fields.proofB
+        this.proofC = fields.proofC
+        this.root = fields.root
+        this.publicAmount = fields.publicAmount
+        this.extDataHash = fields.extDataHash
+        this.inputNullifiers = fields.inputNullifiers
+        this.outputCommitments = fields.outputCommitments
+        this.extData = new ExtData(fields.extData)
+    }
+}
+
+class ExtData {
+    recipient: Uint8Array
+    extAmount: Uint8Array
+    encryptedOutput1: Uint8Array
+    encryptedOutput2: Uint8Array
+    fee: Uint8Array
+    feeRecipient: Uint8Array
+    mintAddress: Uint8Array
+
+    constructor(fields: any) {
+        this.recipient = fields.recipient
+        this.extAmount = fields.extAmount
+        this.encryptedOutput1 = fields.encryptedOutput1
+        this.encryptedOutput2 = fields.encryptedOutput2
+        this.fee = fields.fee
+        this.feeRecipient = fields.feeRecipient
+        this.mintAddress = fields.mintAddress
+    }
+}
+
+
+
+/**
+ * Manually serialize variable length bytes for ExtData because Borsh JS support is tricky
+ * Matches rust logic: u32 length + bytes
+ */
+function serializeExtData(extData: ExtData): Uint8Array {
+    const fixedPartSize = 32 + 8 + 8 + 32 + 32 // recipient + extAmount + fee + feeRecipient + mintAddress
+    const size1 = extData.encryptedOutput1.length
+    const size2 = extData.encryptedOutput2.length
+
+    // Total size: fixed parts + 4 bytes len + data + 4 bytes len + data
+    const buffer = new Uint8Array(fixedPartSize + 4 + size1 + 4 + size2)
+    const view = new DataView(buffer.buffer)
+    let offset = 0
+
+    // recipient (32)
+    buffer.set(extData.recipient, offset); offset += 32
+
+    // extAmount (8 / u64 little endian)
+    buffer.set(extData.extAmount, offset); offset += 8
+
+    // encryptedOutput1 (u32 len + bytes)
+    view.setUint32(offset, size1, true); offset += 4
+    buffer.set(extData.encryptedOutput1, offset); offset += size1
+
+    // encryptedOutput2 (u32 len + bytes)
+    view.setUint32(offset, size2, true); offset += 4
+    buffer.set(extData.encryptedOutput2, offset); offset += size2
+
+    // fee (8 / u64 little endian)
+    buffer.set(extData.fee, offset); offset += 8
+
+    // feeRecipient (32)
+    buffer.set(extData.feeRecipient, offset); offset += 32
+
+    // mintAddress (32)
+    buffer.set(extData.mintAddress, offset); offset += 32
+
+    return buffer
+}
+
+
+/**
+ * Serialize Proof and ExtData for instruction data
+ */
+export function serializeProofAndExtData(proof: any, extData: any): Buffer {
+    // 1. Serialize ExtData manually (because of variable length fields)
+    const extDataBytes = serializeExtData(new ExtData(extData))
+
+    // 2. Serialize Fixed Proof Parts (everything except extData)
+    // We construct a buffer manually to match the Rust struct layout
+    // struct DepositInstruction {
+    //   proofA: [u8; 32],
+    //   proofB: [u8; 64],
+    //   proofC: [u8; 32],
+    //   root: [u8; 32],
+    //   publicAmount: [u8; 32],
+    //   extDataHash: [u8; 32],
+    //   inputNullifiers: [[u8; 32]; 2],
+    //   outputCommitments: [[u8; 32]; 2],
+    //   extData: ExtData
+    // }
+
+    const proofSize = 32 + 64 + 32 + 32 + 32 + 32 + (32 * 2) + (32 * 2)
+    const buffer = new Uint8Array(proofSize + extDataBytes.length)
+    let offset = 0
+
+    // Helper to copy
+    const write = (data: Uint8Array | number[]) => {
+        const arr = data instanceof Uint8Array ? data : new Uint8Array(data)
+        buffer.set(arr, offset)
+        offset += arr.length
+    }
+
+    write(proof.proofA)
+    write(proof.proofB) // proofB is already flattened 64 bytes
+    write(proof.proofC)
+    write(proof.root)
+    write(proof.publicAmount)
+    write(proof.extDataHash)
+
+    proof.inputNullifiers.forEach((n: any) => write(n))
+    proof.outputCommitments.forEach((c: any) => write(c))
+
+    // 3. Append serialized ExtData
+    buffer.set(extDataBytes, offset)
+
+    return Buffer.from(buffer)
+}
+
+/**
+ * Compute the hash of ExtData (Keccak256 of serialized ExtData)
+ */
+export function getExtDataHash(extData: any): string {
+    const serialized = serializeExtData(new ExtData(extData))
+    // Keccak256 hash of the serialized data
+    const hash = keccak256(serialized)
+    return (BigInt(hash) & (BigInt('21888242871839275222246405745257275088548364400416034343698204186575808495617') - BigInt(1)))
+        .toString()
 }
 
 export interface EncryptionKey {

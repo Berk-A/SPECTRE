@@ -27,7 +27,7 @@ export interface BrowserPrivacyState {
 
 export function useBrowserPrivacy() {
     const { connection } = useConnection()
-    const { publicKey, signMessage, connected } = useWallet()
+    const { publicKey, signMessage, signTransaction, connected } = useWallet()
 
     const clientRef = useRef<BrowserPrivacyCash | null>(null)
 
@@ -42,7 +42,7 @@ export function useBrowserPrivacy() {
 
     // Initialize the client when wallet connects
     const initialize = useCallback(async () => {
-        if (!publicKey || !signMessage || !connection) {
+        if (!publicKey || !signMessage || !signTransaction || !connection) {
             return
         }
 
@@ -66,6 +66,10 @@ export function useBrowserPrivacy() {
                     const sig = await signMessage(message)
                     return sig
                 },
+                signTransaction: async (tx) => {
+                    const signed = await signTransaction(tx)
+                    return signed
+                }
             })
 
             await client.initialize((stage, percent) => {
@@ -95,7 +99,7 @@ export function useBrowserPrivacy() {
             }))
             toast.error(`Failed to initialize: ${errorMsg}`)
         }
-    }, [publicKey, signMessage, connection])
+    }, [publicKey, signMessage, signTransaction, connection])
 
     // Reset when wallet disconnects
     useEffect(() => {
