@@ -96,7 +96,9 @@ export interface SignTransactionFn {
 // Constants for transaction building
 const FEE_RECIPIENT = new PublicKey('AWexibGxNFKTa1b5R5MN4PJr9HWnWRwf8EW9g8cLx3dM')
 const ALT_ADDRESS = new PublicKey('HEN49U2ySJ85Vc78qprSW9y6mFDhs1NczRxyppNHjofe')
-const TRANSACT_IX_DISCRIMINATOR = Buffer.from([217, 149, 130, 143, 221, 52, 252, 119])
+const FEE_RECIPIENT = new PublicKey('AWexibGxNFKTa1b5R5MN4PJr9HWnWRwf8EW9g8cLx3dM')
+const ALT_ADDRESS = new PublicKey('HEN49U2ySJ85Vc78qprSW9y6mFDhs1NczRxyppNHjofe')
+const DEPOSIT_IX_DISCRIMINATOR = Buffer.from([242, 35, 198, 137, 82, 225, 242, 182])
 
 // Server proof request/response types
 interface ServerProveRequest {
@@ -893,7 +895,7 @@ export class BrowserPrivacyCash {
             const serializedProof = serializeProofAndExtData(proofToSubmit, extDataEncoded)
 
             // Prepend the discriminator to the instruction data
-            const instructionData = Buffer.concat([TRANSACT_IX_DISCRIMINATOR, serializedProof])
+            const instructionData = Buffer.concat([DEPOSIT_IX_DISCRIMINATOR, serializedProof])
 
             // 2. Find PDAs
 
