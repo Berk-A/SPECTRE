@@ -55,29 +55,7 @@ function concatBytes(...arrays: Uint8Array[]): Uint8Array {
 // Borsh Schemas for Transaction Instruction
 // -----------------------------------------------------------
 
-class DepositArgs {
-    proofA: Uint8Array
-    proofB: Uint8Array
-    proofC: Uint8Array
-    root: Uint8Array
-    publicAmount: Uint8Array
-    extDataHash: Uint8Array
-    inputNullifiers: Uint8Array[]
-    outputCommitments: Uint8Array[]
-    extData: ExtData
 
-    constructor(fields: any) {
-        this.proofA = fields.proofA
-        this.proofB = fields.proofB
-        this.proofC = fields.proofC
-        this.root = fields.root
-        this.publicAmount = fields.publicAmount
-        this.extDataHash = fields.extDataHash
-        this.inputNullifiers = fields.inputNullifiers
-        this.outputCommitments = fields.outputCommitments
-        this.extData = new ExtData(fields.extData)
-    }
-}
 
 class ExtData {
     recipient: Uint8Array

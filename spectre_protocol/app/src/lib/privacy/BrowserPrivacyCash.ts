@@ -25,8 +25,7 @@ import {
     BrowserEncryptionService,
     hexToBytes,
     bytesToHex,
-    serializeProofAndExtData,
-    getExtDataHash
+    serializeProofAndExtData
 } from './browser-encryption'
 import {
     browserStorage,
@@ -799,7 +798,7 @@ export class BrowserPrivacyCash {
     private async submitDeposit(
         proofResult: ServerProofResult,
         extData: ServerProveRequest['extData'],
-        lamports: number
+        _lamports: number
     ): Promise<string> {
         try {
             console.log('[BrowserPrivacyCash] Constructing deposit transaction...')
@@ -840,34 +839,6 @@ export class BrowserPrivacyCash {
             const serializedProof = serializeProofAndExtData(proofToSubmit, extDataEncoded)
 
             // 2. Find PDAs
-            // We need to re-derive PDAs on client side
-            // Note: Since we don't have the full nullifier bytes easily accessible here (only scalar fields),
-            // and `findNullifierPDAs` requires bytes, we rely on the fact that the server
-            // returned valid proofs. However, for transaction building, we need the PDA addresses.
-            // But wait! We need the actual nullifier bytes to derive the PDAs, not just the field elements.
-            // The inputs to the circuit are the nullifier hashes. 
-            // In the `BrowserUtxo`, we have `getNullifier()`.
-
-            // To properly reconstruct the instruction, we need the derived PDAs.
-            // For now, let's assume valid PDAs can be found if we re-derive them from inputs?
-            // Actually, we can't easily re-derive them without the private keys which might be inside the proof request generation.
-            // 
-            // CRITICAL FIX: We need the nullifier values (bytes) used in the proof to derive PDAs.
-            // The server proof result gives us public inputs.
-            // `proofResult.publicInputsBytes[3]` and `[4]` are the nullifiers as field elements (32 bytes big endian usually).
-
-            const nullifier0Bytes = new Uint8Array(proofResult.publicInputsBytes[3]).reverse() // LE for BN usually, but let's check.
-            // Wait, the circuit public inputs are field elements.
-            // We need to pass the PDAs to the instruction.
-            // The PDAs are derived from `hash(nullifier_bytes)`.
-            // In the circuit, inputNullifier is `poseidon(nullifier)`.
-            // The contract checks `hash_to_curve(nullifier)`.
-            // 
-            // Let's look at `privacycash/src/utils/utils.ts` -> `findNullifierPDAs`
-            // It takes `proofToSubmit`.
-
-            // For the sake of progress, I will implement a helper to derive PDAs from the nullifier field elements
-            // provided in the public inputs.
 
             // Helpers
             const getPda = (seed: Uint8Array, prefix: string) => {
@@ -881,20 +852,13 @@ export class BrowserPrivacyCash {
             const n0 = new Uint8Array(proofResult.publicInputsBytes[3])
             const n1 = new Uint8Array(proofResult.publicInputsBytes[4])
 
-            // IMPORTANT: The contract seeds are [prefix, nullifier_bytes]
-            // We need to match exactly what `findNullifierPDAs` does.
-            const nullifier0PDA = getPda(n0, 'nullifier0')
-            const nullifier1PDA = getPda(n1, 'nullifier0') // Wait, index 0 and 1 are primary nullifiers?
             // Actually, for a 2-input join split:
             // input 1 -> nullifier0
             // input 2 -> nullifier1
             const nullifier0_PDA = getPda(n0, 'nullifier0')
             const nullifier1_PDA = getPda(n1, 'nullifier1')
 
-            // For 2-input, typically we check only utilized nullifiers.
-            // But the instruction expects all accounts.
-
-            // Let's try to fetch the ALT first to be ready
+            // Fetch ALT
             const altAccountInfo = await this.connection.getAccountInfo(ALT_ADDRESS)
             if (!altAccountInfo) throw new Error('ALT Account not found')
             const altAccount = new AddressLookupTableAccount({
@@ -907,29 +871,12 @@ export class BrowserPrivacyCash {
             const [treeTokenAccount] = PublicKey.findProgramAddressSync([Buffer.from('token_account')], PRIVACY_CASH_PROGRAM_ID)
             const [globalConfigAccount] = PublicKey.findProgramAddressSync([Buffer.from('global_config')], PRIVACY_CASH_PROGRAM_ID)
 
-            // Derive PDAs for nullifiers.
-            // Since we don't have the original nullifier pre-images easily here (inputs are abstracted),
-            // we have to trust the public signals' nullifiers.
-
             const depositInstruction = new TransactionInstruction({
                 keys: [
                     { pubkey: treeAccount, isSigner: false, isWritable: true },
                     { pubkey: nullifier0_PDA, isSigner: false, isWritable: true },
                     { pubkey: nullifier1_PDA, isSigner: false, isWritable: true },
-                    // We need simplified PDAs for 2 nullifiers?
-                    // SDK uses 4 nullifiers? nullifier0..3?
-                    // Let's look at `deposit.ts`:
-                    // { pubkey: nullifier0PDA, ... },
-                    // { pubkey: nullifier1PDA, ... },
-                    // { pubkey: nullifier2PDA, ... },
-                    // { pubkey: nullifier3PDA, ... },
-                    // 
-                    // And `findCrossCheckNullifierPDAs`. 
-                    // I will replicate this logic simply by using the same nullifiers again or zeros?
-                    // If inputs are dummy, nullifiers are random.
-
-                    // PROVISIONAL: Using the same PDAs for 2/3 as placeholders if they are not strictly checked for existence 
-                    // unless used (which they aren't in 2-input circuit).
+                    // Placeholder PDAs for extra nullifiers
                     { pubkey: nullifier0_PDA, isSigner: false, isWritable: false },
                     { pubkey: nullifier1_PDA, isSigner: false, isWritable: false },
 
@@ -960,6 +907,9 @@ export class BrowserPrivacyCash {
 
             // 4. Sign Transaction
             console.log('[BrowserPrivacyCash] Requesting signature...')
+            if (!this.signTransaction) {
+                throw new Error('signTransaction callback not provided')
+            }
             const signedTransaction = await this.signTransaction(transaction)
 
             // 5. Serialize and Send
@@ -970,7 +920,7 @@ export class BrowserPrivacyCash {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    signedTransaction,
+                    signedTransaction: serializedTransaction,
                     senderAddress: this.publicKey.toBase58(),
                 }),
             })
