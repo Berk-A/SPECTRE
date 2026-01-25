@@ -26,7 +26,7 @@ export const WITHDRAWAL_SEED = 'withdrawal'
 
 // Instruction Discriminators
 export const INITIALIZE_IX_DISCRIMINATOR = Buffer.from([175, 175, 109, 31, 13, 152, 155, 237])
-export const FUND_AGENT_IX_DISCRIMINATOR = Buffer.from([108, 252, 24, 134, 59, 166, 124, 67])
+export const FUND_AGENT_IX_DISCRIMINATOR = Buffer.from([108, 252, 24, 134, 89, 166, 124, 67])
 export const REQUEST_WITHDRAWAL_IX_DISCRIMINATOR = Buffer.from([251, 85, 121, 205, 56, 201, 12, 177])
 export const COMPLETE_WITHDRAWAL_IX_DISCRIMINATOR = Buffer.from([107, 98, 134, 131, 74, 120, 174, 121])
 
