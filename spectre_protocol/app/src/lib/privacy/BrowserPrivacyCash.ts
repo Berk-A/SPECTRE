@@ -144,6 +144,37 @@ export class BrowserPrivacyCash {
     }
 
     /**
+     * Helper to fetch with exponential backoff retry
+     */
+    private async fetchWithRetry(
+        url: string,
+        options?: RequestInit,
+        retries = 3,
+        backoff = 500
+    ): Promise<Response> {
+        try {
+            const response = await fetch(url, options)
+
+            // Retry on 429 or 5xx errors
+            if (!response.ok && (response.status === 429 || response.status >= 500) && retries > 0) {
+                console.warn(`[BrowserPrivacyCash] Request failed with ${response.status}, retrying in ${backoff}ms...`)
+                await new Promise(resolve => setTimeout(resolve, backoff))
+                return this.fetchWithRetry(url, options, retries - 1, backoff * 2)
+            }
+
+            return response
+        } catch (error) {
+            // Retry on network errors
+            if (retries > 0) {
+                console.warn(`[BrowserPrivacyCash] Network error, retrying in ${backoff}ms...`, error)
+                await new Promise(resolve => setTimeout(resolve, backoff))
+                return this.fetchWithRetry(url, options, retries - 1, backoff * 2)
+            }
+            throw error
+        }
+    }
+
+    /**
      * Initialize the client (must be called before use)
      */
     async initialize(onProgress?: (stage: string, percent: number) => void): Promise<void> {
@@ -365,7 +396,7 @@ export class BrowserPrivacyCash {
         const startTime = Date.now()
         console.log('[BrowserPrivacyCash] Sending proof request to server...')
 
-        const response = await fetch(PROVE_API_URL, {
+        const response = await this.fetchWithRetry(PROVE_API_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(request),
@@ -401,7 +432,7 @@ export class BrowserPrivacyCash {
 
         // Fetch UTXOs from relayer API
         while (true) {
-            const response = await fetch(
+            const response = await this.fetchWithRetry(
                 `${RELAYER_API_URL}/utxos/range?start=${offset}&end=${offset + FETCH_UTXOS_GROUP_SIZE}`
             )
             if (!response.ok) throw new Error('Failed to fetch UTXOs')
@@ -704,7 +735,7 @@ export class BrowserPrivacyCash {
      */
     private async queryTreeState(): Promise<{ root: string; nextIndex: number }> {
         try {
-            const response = await fetch(`${RELAYER_API_URL}/tree/state`)
+            const response = await this.fetchWithRetry(`${RELAYER_API_URL}/tree/state`)
             if (!response.ok) throw new Error(`HTTP ${response.status}`)
             return response.json()
         } catch (error) {
@@ -724,7 +755,7 @@ export class BrowserPrivacyCash {
     private async fetchMerkleProof(
         commitment: string
     ): Promise<{ pathIndices: number; pathElements: string[] }> {
-        const response = await fetch(`${RELAYER_API_URL}/tree/proof?commitment=${commitment}`)
+        const response = await this.fetchWithRetry(`${RELAYER_API_URL}/tree/proof?commitment=${commitment}`)
         if (!response.ok) throw new Error('Failed to fetch Merkle proof')
         return response.json()
     }
@@ -738,7 +769,7 @@ export class BrowserPrivacyCash {
         lamports: number
     ): Promise<string> {
         try {
-            const response = await fetch(`${RELAYER_API_URL}/deposit`, {
+            const response = await this.fetchWithRetry(`${RELAYER_API_URL}/deposit`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -790,7 +821,7 @@ export class BrowserPrivacyCash {
         lamports: number,
         recipient: string
     ): Promise<{ signature: string; fee: number }> {
-        const response = await fetch(`${RELAYER_API_URL}/withdraw`, {
+        const response = await this.fetchWithRetry(`${RELAYER_API_URL}/withdraw`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

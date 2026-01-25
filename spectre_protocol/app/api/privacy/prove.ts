@@ -34,45 +34,81 @@ async function getLightWasm(): Promise<hasher.LightWasm> {
     return lightWasm
 }
 
+import fs from 'fs'
+import path from 'path'
+
+// ... existing imports
+
 async function loadCircuits(): Promise<{ wasm: Uint8Array; zkey: Uint8Array }> {
     if (circuitCache) {
         console.log('[Prove] Using cached circuits')
         return circuitCache
     }
 
-    // Load circuit files from public URL
-    // On Vercel, use VERCEL_URL; locally, use localhost or configured base URL
-    let circuitBaseUrl: string
-    if (process.env.VERCEL_URL) {
-        // Vercel deployment - use the deployment URL
-        circuitBaseUrl = `https://${process.env.VERCEL_URL}/circuits`
-    } else if (process.env.CIRCUIT_BASE_URL) {
-        // Custom URL configured
-        circuitBaseUrl = process.env.CIRCUIT_BASE_URL
-    } else {
-        // Fallback to PrivacyCash CDN
-        circuitBaseUrl = 'https://privacycash.org/circuits'
+    try {
+        // Try loading from filesystem first (much faster and no auth issues)
+        // In Vercel, public files are usually at process.cwd() + /public
+        // OR sometimes at the root depending on build settings.
+        // We'll try a few standard locations.
+        const possiblePaths = [
+            path.join(process.cwd(), 'public', 'circuits'),
+            path.join(process.cwd(), 'circuits'),
+            // Fallback for some Vercel configs
+            path.join(__dirname, '..', 'public', 'circuits')
+        ]
+
+        let wasmBuffer: Buffer | null = null
+        let zkeyBuffer: Buffer | null = null
+        let loadedPath = ''
+
+        for (const dir of possiblePaths) {
+            const wasmPath = path.join(dir, 'transaction2.wasm')
+            const zkeyPath = path.join(dir, 'transaction2.zkey')
+
+            if (fs.existsSync(wasmPath) && fs.existsSync(zkeyPath)) {
+                console.log(`[Prove] Found circuits at ${dir}`)
+                wasmBuffer = fs.readFileSync(wasmPath)
+                zkeyBuffer = fs.readFileSync(zkeyPath)
+                loadedPath = dir
+                break
+            }
+        }
+
+        if (wasmBuffer && zkeyBuffer) {
+            console.log(`[Prove] Circuits loaded from filesystem: WASM=${wasmBuffer.byteLength}B, zkey=${zkeyBuffer.byteLength}B`)
+            circuitCache = {
+                wasm: new Uint8Array(wasmBuffer),
+                zkey: new Uint8Array(zkeyBuffer),
+            }
+            return circuitCache
+        }
+    } catch (fsError) {
+        console.warn('[Prove] Failed to load from filesystem, falling back to fetch:', fsError)
     }
 
-    const wasmUrl = `${circuitBaseUrl}/transaction2.wasm`
-    const zkeyUrl = `${circuitBaseUrl}/transaction2.zkey`
+    // Fallback to PrivacyCash CDN if filesystem fails
+    // We do NOT use VERCEL_URL because it requires auth for public assets in some configs
+    const circuitBaseUrl = 'https://privacycash.org/circuits'
 
     console.log(`[Prove] Fetching circuits from ${circuitBaseUrl}`)
 
-    const [wasmResponse, zkeyResponse] = await Promise.all([fetch(wasmUrl), fetch(zkeyUrl)])
+    const [wasmResponse, zkeyResponse] = await Promise.all([
+        fetch(`${circuitBaseUrl}/transaction2.wasm`),
+        fetch(`${circuitBaseUrl}/transaction2.zkey`)
+    ])
 
     if (!wasmResponse.ok || !zkeyResponse.ok) {
         throw new Error(`Failed to fetch circuit files: WASM=${wasmResponse.status}, zkey=${zkeyResponse.status}`)
     }
 
-    const wasmBuffer = await wasmResponse.arrayBuffer()
-    const zkeyBuffer = await zkeyResponse.arrayBuffer()
+    const wasmArrayBuffer = await wasmResponse.arrayBuffer()
+    const zkeyArrayBuffer = await zkeyResponse.arrayBuffer()
 
-    console.log(`[Prove] Circuits loaded: WASM=${wasmBuffer.byteLength}B, zkey=${zkeyBuffer.byteLength}B`)
+    console.log(`[Prove] Circuits loaded from CDN: WASM=${wasmArrayBuffer.byteLength}B, zkey=${zkeyArrayBuffer.byteLength}B`)
 
     circuitCache = {
-        wasm: new Uint8Array(wasmBuffer),
-        zkey: new Uint8Array(zkeyBuffer),
+        wasm: new Uint8Array(wasmArrayBuffer),
+        zkey: new Uint8Array(zkeyArrayBuffer),
     }
 
     return circuitCache
