@@ -16,17 +16,14 @@ import {
     LAMPORTS_PER_SOL,
     TransactionInstruction,
     SystemProgram,
-    ComputeBudgetProgram,
     VersionedTransaction,
-    TransactionMessage,
-    AddressLookupTableAccount
+    TransactionMessage
 } from '@solana/web3.js'
 import BN from 'bn.js'
 import {
     BrowserEncryptionService,
     hexToBytes,
-    bytesToHex,
-    serializeProofAndExtData
+    bytesToHex
 } from './browser-encryption'
 import {
     browserStorage,
@@ -102,10 +99,6 @@ export interface SignTransactionFn {
 }
 
 // Constants for transaction building
-const FEE_RECIPIENT = new PublicKey('AWexibGxNFKTa1b5R5MN4PJr9HWnWRwf8EW9g8cLx3dM')
-const ALT_ADDRESS = new PublicKey('HEN49U2ySJ85Vc78qprSW9y6mFDhs1NczRxyppNHjofe')
-const COMMITMENT_SIZE = 32
-const NULLIFIER_SIZE = 32
 const PROOF_SIZE = 256
 
 // Server proof request/response types
@@ -346,7 +339,7 @@ export class BrowserPrivacyCash {
      */
     async unshield(
         lamports: number,
-        recipient?: string, // Not used in Phase 1 (withdraws to requester)
+        _recipient?: string, // Not used in Phase 1 (withdraws to requester)
         onProgress?: (stage: string, percent: number) => void
     ): Promise<UnshieldResult> {
         this.ensureInitialized()
@@ -474,7 +467,7 @@ export class BrowserPrivacyCash {
      */
     private async submitDeposit(
         proof: ServerProofResult,
-        extDataEncoded: any, // Not used in Spectre v1 (we use ZkProof struct)
+        _extDataEncoded: any, // Not used in Spectre v1 (we use ZkProof struct)
         amount: number
     ): Promise<string> {
         console.log('[BrowserPrivacyCash] Constructing fund_agent transaction...')
@@ -492,7 +485,7 @@ export class BrowserPrivacyCash {
 
         // Ensure proper byte arrays
         const commitmentBytes = new Uint8Array(proof.publicInputsBytes[5]) // Output 0 Commitment
-        const nullifierHashBytes = new Uint8Array(proof.publicInputsBytes[3]) // Input Nullifier 0 (we use this as the unique ID?)
+        // const nullifierHashBytes = new Uint8Array(proof.publicInputsBytes[3]) // Input Nullifier 0 (we use this as the unique ID?)
         // WAIT: fund_agent expects a NEW commitment. 
         // In the circuit, outputCommitment[0] is the new note.
         // We should use outputCommitment[0] for the UserDeposit PDA.
@@ -714,8 +707,21 @@ export class BrowserPrivacyCash {
     /**
      * Check if a UTXO has been spent
      */
-    private async isUtxoSpent(utxo: BrowserUtxo): Promise<boolean> {
+    /**
+     * Check if a UTXO has been spent
+     */
+    private async isUtxoSpent(_utxo: BrowserUtxo): Promise<boolean> {
         return false // Mock for Phase 1 (Spectre doesn't track spent nullifiers on client yet)
+    }
+
+    /**
+     * Clear cached UTXOs
+     */
+    clearCache(): void {
+        const walletKey = localstorageKey(this.publicKey.toBase58())
+        this.storage.removeItem(LSK_ENCRYPTED_OUTPUTS + walletKey)
+        this.storage.removeItem(LSK_FETCH_OFFSET + walletKey)
+        console.log('[BrowserPrivacyCash] Cache cleared')
     }
 
     /**
@@ -835,108 +841,7 @@ export class BrowserPrivacyCash {
         }
     }
 
-    /**
-     * Build withdraw proof request for server
-     */
-    private async buildWithdrawProofRequest(
-        lamports: number,
-        existingUtxos: BrowserUtxo[],
-        keypair: BrowserKeypair,
-        utxoPrivateKey: string,
-        recipient: string
-    ): Promise<ServerProveRequest> {
-        const treeState = await this.queryTreeState()
-        const currentIndex = treeState.nextIndex
 
-        // Use up to 2 UTXOs as inputs
-        const inputs = [
-            existingUtxos[0],
-            existingUtxos.length > 1
-                ? existingUtxos[1]
-                : BrowserUtxo.dummy(keypair, this.hasher!),
-        ]
-
-        // Fetch Merkle proofs for real UTXOs
-        const proofs = await Promise.all(
-            inputs.map((utxo) =>
-                utxo.amount > BigInt(0)
-                    ? this.fetchMerkleProof(utxo.getCommitment())
-                    : { pathIndices: 0, pathElements: new Array(MERKLE_TREE_DEPTH).fill('0') }
-            )
-        )
-
-        const inputMerklePathIndices = inputs.map((u) => u.index || 0)
-        const inputMerklePaths = proofs.map((p) => p.pathElements)
-
-        // Calculate amounts
-        const inputSum = inputs.reduce((sum, u) => sum + u.amount, BigInt(0))
-        const fee = BigInt(Math.floor(lamports * 0.003)) // 0.3% fee
-        const changeAmount = inputSum - BigInt(lamports)
-        const publicAmount = ((FIELD_SIZE - BigInt(lamports) + fee) % FIELD_SIZE).toString()
-
-        // Build outputs
-        const outputBlinding1 = Math.floor(Math.random() * 1000000000).toString()
-        const outputBlinding2 = Math.floor(Math.random() * 1000000000).toString()
-
-        // Build output UTXOs for encryption
-        const outputs = [
-            new BrowserUtxo({
-                hasher: this.hasher!,
-                amount: changeAmount,
-                keypair,
-                blinding: BigInt(outputBlinding1),
-                index: currentIndex,
-            }),
-            new BrowserUtxo({
-                hasher: this.hasher!,
-                amount: BigInt(0),
-                keypair,
-                blinding: BigInt(outputBlinding2),
-                index: currentIndex + 1,
-            }),
-        ]
-
-        // Encrypt outputs
-        const encryptedOutput1 = await this.encryptionService.encrypt(outputs[0].serialize())
-        const encryptedOutput2 = await this.encryptionService.encrypt(outputs[1].serialize())
-
-        const extData = {
-            recipient,
-            extAmount: (-lamports).toString(), // Negative for withdraw
-            encryptedOutput1: Array.from(encryptedOutput1),
-            encryptedOutput2: Array.from(encryptedOutput2),
-            fee: fee.toString(),
-        }
-
-        return {
-            operation: 'withdraw',
-            inputs: inputs.map((u) => ({
-                amount: u.amount.toString(),
-                blinding: u.blinding.toString(),
-                privateKey: u.keypair.privkey.toString(),
-                index: u.index || 0,
-                mintAddress: u.mintAddress || DEFAULT_MINT_ADDRESS,
-            })),
-            outputs: [
-                {
-                    amount: changeAmount.toString(),
-                    blinding: outputBlinding1,
-                    index: currentIndex,
-                },
-                {
-                    amount: '0',
-                    blinding: outputBlinding2,
-                    index: currentIndex + 1,
-                },
-            ],
-            root: treeState.root,
-            inputMerklePaths,
-            inputMerklePathIndices,
-            extData,
-            publicAmount,
-            utxoPrivateKey,
-        }
-    }
 
     /**
      * Fetch Merkle tree state directly from on-chain PDA
