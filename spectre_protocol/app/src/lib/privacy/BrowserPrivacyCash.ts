@@ -21,6 +21,7 @@ import {
     TransactionMessage,
     AddressLookupTableAccount
 } from '@solana/web3.js'
+import BN from 'bn.js'
 import {
     BrowserEncryptionService,
     hexToBytes,
@@ -763,19 +764,71 @@ export class BrowserPrivacyCash {
     }
 
     /**
-     * Query Merkle tree state from relayer
+     * Fetch Merkle tree state directly from on-chain PDA
+     * Fallback for when Relayer is unavailable or for Devnet
+     */
+    private async fetchTreeStateFromChain(): Promise<{ root: string; nextIndex: number } | null> {
+        try {
+            const [treeAddress] = PublicKey.findProgramAddressSync(
+                [Buffer.from('merkle_tree')],
+                PRIVACY_CASH_PROGRAM_ID
+            )
+            const accountInfo = await this.connection.getAccountInfo(treeAddress)
+            if (!accountInfo) {
+                console.warn('[BrowserPrivacyCash] Tree account not found on chain')
+                return null
+            }
+
+            // Layout Assumptions based on 4136 byte account:
+            // 0-8: Discriminator
+            // 8-40: Authority (32 bytes)
+            // 40-72: Root (32 bytes)
+            // 72-80: NextIndex (8 bytes LE)
+
+            // Extract Root
+            const rootBytes = accountInfo.data.subarray(40, 72)
+            // Convert to decimal string for the circuit (Little Endian bytes from BN field element)
+            const root = new BN(rootBytes, 'le').toString()
+
+            // Extract Next Index
+            const nextIndexBytes = accountInfo.data.subarray(72, 80)
+            const nextIndex = new BN(nextIndexBytes, 'le').toNumber()
+
+            console.log(`[BrowserPrivacyCash] Fetched tree state from chain: root=${root}, nextIndex=${nextIndex}`)
+            return { root, nextIndex }
+
+        } catch (error) {
+            console.error('[BrowserPrivacyCash] Failed to fetch tree state from chain:', error)
+            return null
+        }
+    }
+
+    /**
+     * Query Merkle tree state from relayer (fallback to chain)
      */
     private async queryTreeState(): Promise<{ root: string; nextIndex: number }> {
         try {
+            // Priority 1: Try Relayer (Standard path)
             const response = await this.fetchWithRetry(`${RELAYER_API_URL}/tree/state`)
             if (!response.ok) throw new Error(`HTTP ${response.status}`)
             return response.json()
         } catch (error) {
-            console.warn('[BrowserPrivacyCash] Relayer unavailable, using mock tree state:', error)
-            // For fresh deposit, use the computed empty root
+            console.warn('[BrowserPrivacyCash] Relayer unavailable, trying on-chain state fetch:', error)
+
+            // Priority 2: Try On-Chain Fetch (Devnet/Fallback path)
+            try {
+                const chainState = await this.fetchTreeStateFromChain()
+                if (chainState) {
+                    return chainState
+                }
+            } catch (chainError) {
+                console.error('[BrowserPrivacyCash] Chain fetch also failed:', chainError)
+            }
+
+            // Priority 3: Mock State (Fresh Tree / Emergency)
             // NOTE: The server will compute this correctly using hasher.rs
             return {
-                root: '0', // Server will compute correct empty root
+                root: '0',
                 nextIndex: 0,
             }
         }
@@ -903,7 +956,7 @@ export class BrowserPrivacyCash {
                 units: 1_000_000
             })
 
-            const latestBlockhash = await this.connection.getLatestBlockhash({ commitment: 'finalized' })
+            const latestBlockhash = await this.connection.getLatestBlockhash()
 
             const messageV0 = new TransactionMessage({
                 payerKey: this.publicKey,
