@@ -86,9 +86,9 @@ async function loadCircuits(): Promise<{ wasm: Uint8Array; zkey: Uint8Array }> {
         console.warn('[Prove] Failed to load from filesystem, falling back to fetch:', fsError)
     }
 
-    // Fallback to PrivacyCash CDN if filesystem fails
-    // We do NOT use VERCEL_URL because it requires auth for public assets in some configs
-    const circuitBaseUrl = 'https://privacycash.org/circuits'
+    // Fallback to GitHub Raw content (Reliable for public repos)
+    // Using main branch
+    const circuitBaseUrl = 'https://raw.githubusercontent.com/Berk-A/SPECTRE/main/spectre_protocol/app/public/circuits'
 
     console.log(`[Prove] Fetching circuits from ${circuitBaseUrl}`)
 
@@ -103,6 +103,15 @@ async function loadCircuits(): Promise<{ wasm: Uint8Array; zkey: Uint8Array }> {
 
     const wasmArrayBuffer = await wasmResponse.arrayBuffer()
     const zkeyArrayBuffer = await zkeyResponse.arrayBuffer()
+
+    // Validate WASM magic number (0x00 0x61 0x73 0x6d)
+    const wasmHeader = new Uint8Array(wasmArrayBuffer.slice(0, 4))
+    if (wasmHeader[0] !== 0x00 || wasmHeader[1] !== 0x61 || wasmHeader[2] !== 0x73 || wasmHeader[3] !== 0x6d) {
+        const headerHex = Array.from(wasmHeader).map(b => b.toString(16).padStart(2, '0')).join(' ')
+        const headerText = new TextDecoder().decode(wasmHeader).replace(/[^\x20-\x7E]/g, '.')
+        console.error(`[Prove] Invalid WASM header: ${headerHex} ("${headerText}")`)
+        throw new Error(`Invalid WASM file downloaded from ${circuitBaseUrl}/transaction2.wasm. Got header: ${headerHex}`)
+    }
 
     console.log(`[Prove] Circuits loaded from CDN: WASM=${wasmArrayBuffer.byteLength}B, zkey=${zkeyArrayBuffer.byteLength}B`)
 
