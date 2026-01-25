@@ -4,7 +4,17 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "installCommand": "npm install",
+  "functions": {
+    "api/privacy/prove.ts": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  },
   "rewrites": [
+    {
+      "source": "/api/privacy/prove",
+      "destination": "/api/privacy/prove"
+    },
     {
       "source": "/api/privacy/:path*",
       "destination": "/api/privacy/[...path]"

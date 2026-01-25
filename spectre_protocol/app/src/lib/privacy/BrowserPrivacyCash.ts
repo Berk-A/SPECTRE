@@ -1,23 +1,41 @@
 /**
  * Browser-compatible PrivacyCash Client
- * 
+ *
  * Main entry point for shielding/unshielding SOL in the browser.
- * Uses Web Crypto API, localStorage, and snarkjs for ZK proofs.
+ * Uses Web Crypto API, localStorage, and SERVER-SIDE proof generation.
+ *
+ * IMPORTANT: Proof generation is done on the server because:
+ * 1. @lightprotocol/hasher.rs produces different Poseidon hashes than circomlibjs
+ * 2. The PrivacyCash circuit was built with hasher.rs
+ * 3. hasher.rs has WASM bundling issues in Vite/browser environments
  */
 
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js'
 import { BrowserEncryptionService, hexToBytes, bytesToHex } from './browser-encryption'
-import { browserStorage, localstorageKey, LSK_ENCRYPTED_OUTPUTS, LSK_FETCH_OFFSET, getStorage } from './browser-storage'
-import { generateProofBrowser, formatProofForChain, type Groth16Proof } from './browser-prover'
+import {
+    browserStorage,
+    localstorageKey,
+    LSK_ENCRYPTED_OUTPUTS,
+    LSK_FETCH_OFFSET,
+    getStorage,
+} from './browser-storage'
 import { BrowserUtxo, BrowserKeypair, type PoseidonHasher } from './browser-utxo'
-import { getCircuitLoader } from './circuitLoader'
 import { PRIVACY_CASH_PROGRAM_ID } from '@/lib/config/constants'
 
-// PrivacyCash Relayer API - using Vercel proxy to bypass CORS
-// In development: direct API, In production: /api/privacy proxy
-const RELAYER_API_URL = typeof window !== 'undefined' && window.location.hostname !== 'localhost'
-    ? '/api/privacy'  // Production: use Vercel serverless proxy
-    : 'https://api3.privacycash.org'  // Local dev: direct (may need proxy)
+// API URLs
+// In production: use Vercel serverless proxy
+// In development: use direct API (may need CORS proxy)
+const RELAYER_API_URL =
+    typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+        ? '/api/privacy' // Production: Vercel serverless proxy
+        : 'https://api3.privacycash.org' // Local dev
+
+// Server-side proof generation API
+const PROVE_API_URL =
+    typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+        ? '/api/privacy/prove' // Production: Vercel serverless
+        : '/api/privacy/prove' // Same endpoint for local (needs Vercel dev)
+
 const FETCH_UTXOS_GROUP_SIZE = 100
 
 // Field size for circuit calculations
@@ -27,6 +45,9 @@ const FIELD_SIZE = BigInt(
 
 // Merkle tree depth - must match the circuit (26 levels for PrivacyCash)
 const MERKLE_TREE_DEPTH = 26
+
+// Default mint address for SOL
+const DEFAULT_MINT_ADDRESS = '11111111111111111111111111111112'
 
 export interface ShieldResult {
     success: boolean
@@ -52,10 +73,54 @@ export interface SignMessageFn {
     (message: Uint8Array): Promise<Uint8Array>
 }
 
+// Server proof request/response types
+interface ServerProveRequest {
+    operation: 'deposit' | 'withdraw'
+    inputs: Array<{
+        amount: string
+        blinding: string
+        privateKey: string
+        index: number
+        mintAddress?: string
+    }>
+    outputs: Array<{
+        amount: string
+        blinding: string
+        index: number
+    }>
+    root: string
+    inputMerklePaths: string[][]
+    inputMerklePathIndices: number[]
+    extData: {
+        recipient: string
+        extAmount: string
+        encryptedOutput1: number[]
+        encryptedOutput2: number[]
+        fee: string
+    }
+    publicAmount: string
+    utxoPrivateKey: string
+}
+
+interface ServerProofResult {
+    proof: {
+        pi_a: string[]
+        pi_b: string[][]
+        pi_c: string[]
+    }
+    publicSignals: string[]
+    proofBytes: {
+        proofA: number[]
+        proofB: number[]
+        proofC: number[]
+    }
+    publicInputsBytes: number[][]
+}
+
 /**
  * Browser-compatible PrivacyCash client
- * 
- * Handles shielded transactions using ZK proofs
+ *
+ * Handles shielded transactions using server-side ZK proof generation
  */
 export class BrowserPrivacyCash {
     private connection: Connection
@@ -65,7 +130,6 @@ export class BrowserPrivacyCash {
     private hasher: PoseidonHasher | null = null
     private signMessage: SignMessageFn
     private initialized = false
-    private circuits: { wasm: ArrayBuffer; zkey: ArrayBuffer } | null = null
 
     constructor(options: {
         connection: Connection
@@ -82,20 +146,20 @@ export class BrowserPrivacyCash {
     /**
      * Initialize the client (must be called before use)
      */
-    async initialize(
-        onProgress?: (stage: string, percent: number) => void
-    ): Promise<void> {
+    async initialize(onProgress?: (stage: string, percent: number) => void): Promise<void> {
         if (this.initialized) return
 
         onProgress?.('Deriving encryption keys', 10)
 
-        // Derive encryption keys from wallet signature (will restore from storage if available)
+        // Derive encryption keys from wallet signature
         const walletAddress = this.publicKey.toBase58()
         await this.encryptionService.deriveEncryptionKeyFromWallet(this.signMessage, walletAddress)
 
-        onProgress?.('Loading Poseidon hasher', 30)
+        onProgress?.('Loading Poseidon hasher', 50)
 
         // Load browser-compatible Poseidon hasher (circomlibjs)
+        // NOTE: This is only used for local operations like UTXO deserialization
+        // Server uses @lightprotocol/hasher.rs for proof generation
         try {
             const { getPoseidonHasher } = await import('./browser-poseidon')
             this.hasher = await getPoseidonHasher()
@@ -104,21 +168,9 @@ export class BrowserPrivacyCash {
             throw new Error('Failed to load cryptographic components')
         }
 
-        onProgress?.('Loading ZK circuits', 60)
-
-        // Load circuits
-        try {
-            const loader = getCircuitLoader()
-            this.circuits = await loader.load((progress) => {
-                onProgress?.(progress.message, 60 + progress.progress * 0.3)
-            })
-        } catch (error) {
-            console.error('[BrowserPrivacyCash] Failed to load circuits:', error)
-            throw new Error('Failed to load ZK circuits. Place transaction2.wasm and transaction2.zkey in /public/circuits/')
-        }
-
         onProgress?.('Ready', 100)
         this.initialized = true
+        console.log('[BrowserPrivacyCash] Initialized (server-side proof generation mode)')
     }
 
     /**
@@ -131,9 +183,7 @@ export class BrowserPrivacyCash {
     /**
      * Get the private (shielded) balance
      */
-    async getPrivateBalance(
-        onProgress?: (message: string) => void
-    ): Promise<PrivateBalance> {
+    async getPrivateBalance(onProgress?: (message: string) => void): Promise<PrivateBalance> {
         this.ensureInitialized()
 
         onProgress?.('Fetching UTXOs...')
@@ -160,13 +210,14 @@ export class BrowserPrivacyCash {
             onProgress?.('Preparing deposit', 10)
 
             // Try to fetch existing UTXOs for consolidation
-            // If relayer is unavailable (CORS/rate limit), proceed with fresh deposit
             let existingUtxos: BrowserUtxo[] = []
             try {
                 existingUtxos = await this.fetchUtxos()
             } catch (fetchError) {
-                console.warn('[BrowserPrivacyCash] Could not fetch UTXOs, proceeding with fresh deposit:', fetchError)
-                // For fresh deposits, we don't need existing UTXOs
+                console.warn(
+                    '[BrowserPrivacyCash] Could not fetch UTXOs, proceeding with fresh deposit:',
+                    fetchError
+                )
             }
 
             onProgress?.('Building proof inputs', 20)
@@ -175,32 +226,25 @@ export class BrowserPrivacyCash {
             const utxoPrivateKey = this.encryptionService.getUtxoPrivateKey('v2')
             const utxoKeypair = new BrowserKeypair(utxoPrivateKey, this.hasher!)
 
-            // Build proof inputs
-            const proofInput = await this.buildDepositInput(
+            // Build proof request for server
+            const proofRequest = await this.buildDepositProofRequest(
                 lamports,
                 existingUtxos,
-                utxoKeypair
+                utxoKeypair,
+                utxoPrivateKey
             )
 
-            onProgress?.('Generating ZK proof', 40)
+            onProgress?.('Generating ZK proof (server-side)', 40)
 
-            // Generate proof
-            const { proof, publicSignals } = await generateProofBrowser(
-                proofInput.circuitInput,
-                this.circuits!.wasm,
-                this.circuits!.zkey,
-                (stage, percent) => onProgress?.(stage, 40 + percent * 0.4)
+            // Generate proof on server
+            const proofResult = await this.generateProofOnServer(proofRequest, (stage, percent) =>
+                onProgress?.(stage, 40 + percent * 0.4)
             )
 
             onProgress?.('Building transaction', 85)
 
-            // Build and sign transaction
-            const txHash = await this.submitDeposit(
-                proof,
-                publicSignals,
-                proofInput.extData,
-                lamports
-            )
+            // Submit deposit to relayer
+            const txHash = await this.submitDeposit(proofResult, proofRequest.extData, lamports)
 
             onProgress?.('Deposit complete', 100)
 
@@ -234,10 +278,7 @@ export class BrowserPrivacyCash {
             const existingUtxos = await this.fetchUtxos()
 
             // Check balance
-            const totalBalance = existingUtxos.reduce(
-                (sum, utxo) => sum + utxo.amount,
-                BigInt(0)
-            )
+            const totalBalance = existingUtxos.reduce((sum, utxo) => sum + utxo.amount, BigInt(0))
             if (totalBalance < BigInt(lamports)) {
                 return {
                     success: false,
@@ -250,31 +291,28 @@ export class BrowserPrivacyCash {
             const utxoPrivateKey = this.encryptionService.getUtxoPrivateKey('v2')
             const utxoKeypair = new BrowserKeypair(utxoPrivateKey, this.hasher!)
 
-            // Build proof inputs
-            const proofInput = await this.buildWithdrawInput(
+            // Build proof request for server
+            const proofRequest = await this.buildWithdrawProofRequest(
                 lamports,
                 existingUtxos,
                 utxoKeypair,
+                utxoPrivateKey,
                 recipient ?? this.publicKey.toBase58()
             )
 
-            onProgress?.('Generating ZK proof', 40)
+            onProgress?.('Generating ZK proof (server-side)', 40)
 
-            // Generate proof
-            const { proof, publicSignals } = await generateProofBrowser(
-                proofInput.circuitInput,
-                this.circuits!.wasm,
-                this.circuits!.zkey,
-                (stage, percent) => onProgress?.(stage, 40 + percent * 0.4)
+            // Generate proof on server
+            const proofResult = await this.generateProofOnServer(proofRequest, (stage, percent) =>
+                onProgress?.(stage, 40 + percent * 0.4)
             )
 
             onProgress?.('Submitting to relayer', 85)
 
-            // Submit to relayer
+            // Submit withdraw to relayer
             const result = await this.submitWithdraw(
-                proof,
-                publicSignals,
-                proofInput.extData,
+                proofResult,
+                proofRequest.extData,
                 lamports,
                 recipient ?? this.publicKey.toBase58()
             )
@@ -316,11 +354,43 @@ export class BrowserPrivacyCash {
     }
 
     /**
+     * Generate proof using server-side API
+     */
+    private async generateProofOnServer(
+        request: ServerProveRequest,
+        onProgress?: (stage: string, percent: number) => void
+    ): Promise<ServerProofResult> {
+        onProgress?.('Connecting to proof server', 10)
+
+        const startTime = Date.now()
+        console.log('[BrowserPrivacyCash] Sending proof request to server...')
+
+        const response = await fetch(PROVE_API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request),
+        })
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ error: response.statusText }))
+            throw new Error(
+                `Server proof generation failed: ${errorData.message || errorData.error || response.statusText}`
+            )
+        }
+
+        const result = (await response.json()) as ServerProofResult
+
+        const elapsed = Date.now() - startTime
+        console.log(`[BrowserPrivacyCash] Proof generated in ${elapsed}ms`)
+
+        onProgress?.('Proof generated', 100)
+        return result
+    }
+
+    /**
      * Fetch and decrypt user's UTXOs
      */
-    private async fetchUtxos(
-        onProgress?: (message: string) => void
-    ): Promise<BrowserUtxo[]> {
+    private async fetchUtxos(onProgress?: (message: string) => void): Promise<BrowserUtxo[]> {
         const walletKey = localstorageKey(this.publicKey.toBase58())
         const validUtxos: BrowserUtxo[] = []
 
@@ -351,12 +421,7 @@ export class BrowserPrivacyCash {
 
                     const privateKey = this.encryptionService.getUtxoPrivateKey(version)
                     const keypair = new BrowserKeypair(privateKey, this.hasher!)
-                    const utxo = BrowserUtxo.deserialize(
-                        decryptedStr,
-                        keypair,
-                        this.hasher!,
-                        version
-                    )
+                    const utxo = BrowserUtxo.deserialize(decryptedStr, keypair, this.hasher!, version)
 
                     if (utxo.amount > BigInt(0)) {
                         // Check if spent
@@ -378,13 +443,10 @@ export class BrowserPrivacyCash {
         }
 
         // Cache valid UTXOs
-        const serialized = validUtxos.map((u) => bytesToHex(
-            new TextEncoder().encode(u.serialize())
-        ))
-        this.storage.setItem(
-            LSK_ENCRYPTED_OUTPUTS + walletKey,
-            JSON.stringify(serialized)
+        const serialized = validUtxos.map((u) =>
+            bytesToHex(new TextEncoder().encode(u.serialize()))
         )
+        this.storage.setItem(LSK_ENCRYPTED_OUTPUTS + walletKey, JSON.stringify(serialized))
 
         return validUtxos
     }
@@ -396,11 +458,10 @@ export class BrowserPrivacyCash {
         const nullifier = utxo.getNullifier()
 
         // Convert to bytes for PDA derivation
-        // This is simplified - real implementation needs proper byte conversion
         const nullifierBytes = new Uint8Array(32)
         const nullifierBigInt = BigInt(nullifier)
         for (let i = 31; i >= 0; i--) {
-            nullifierBytes[i] = Number(nullifierBigInt >> BigInt((31 - i) * 8) & BigInt(0xff))
+            nullifierBytes[i] = Number((nullifierBigInt >> BigInt((31 - i) * 8)) & BigInt(0xff))
         }
 
         // Check both nullifier PDAs
@@ -413,22 +474,20 @@ export class BrowserPrivacyCash {
             PRIVACY_CASH_PROGRAM_ID
         )
 
-        const accounts = await this.connection.getMultipleAccountsInfo([
-            nullifier0PDA,
-            nullifier1PDA,
-        ])
+        const accounts = await this.connection.getMultipleAccountsInfo([nullifier0PDA, nullifier1PDA])
 
         return accounts.some((acc) => acc !== null)
     }
 
     /**
-     * Build deposit proof inputs
+     * Build deposit proof request for server
      */
-    private async buildDepositInput(
+    private async buildDepositProofRequest(
         lamports: number,
         existingUtxos: BrowserUtxo[],
-        keypair: BrowserKeypair
-    ): Promise<{ circuitInput: Record<string, unknown>; extData: unknown }> {
+        keypair: BrowserKeypair,
+        utxoPrivateKey: string
+    ): Promise<ServerProveRequest> {
         // Query current Merkle tree state
         const treeState = await this.queryTreeState()
         const currentIndex = treeState.nextIndex
@@ -438,12 +497,11 @@ export class BrowserPrivacyCash {
         let inputMerklePaths: string[][]
 
         if (existingUtxos.length === 0) {
-            // Fresh deposit: use dummy inputs with dummy Merkle paths
+            // Fresh deposit: use dummy inputs
             inputs = [
                 BrowserUtxo.dummy(keypair, this.hasher!),
                 BrowserUtxo.dummy(keypair, this.hasher!),
             ]
-            // For dummy inputs, use zero-filled Merkle path elements
             inputMerklePaths = [
                 new Array(MERKLE_TREE_DEPTH).fill('0'),
                 new Array(MERKLE_TREE_DEPTH).fill('0'),
@@ -456,7 +514,6 @@ export class BrowserPrivacyCash {
                     ? existingUtxos[1]
                     : BrowserUtxo.dummy(keypair, this.hasher!),
             ]
-            // Fetch Merkle proofs for real UTXOs
             const proofs = await Promise.all(
                 inputs.map((utxo) =>
                     utxo.amount > BigInt(0)
@@ -467,26 +524,31 @@ export class BrowserPrivacyCash {
             inputMerklePaths = proofs.map((p) => p.pathElements)
         }
 
-        // inPathIndices is the leaf index of each UTXO in the Merkle tree (flat array)
         const inputMerklePathIndices = inputs.map((u) => u.index || 0)
 
         // Calculate amounts
         const inputSum = inputs.reduce((sum, u) => sum + u.amount, BigInt(0))
         const outputAmount = inputSum + BigInt(lamports)
-        const publicAmount = (BigInt(lamports) + FIELD_SIZE) % FIELD_SIZE
+        const publicAmount = ((BigInt(lamports) + FIELD_SIZE) % FIELD_SIZE).toString()
 
         // Build outputs
+        const outputBlinding1 = Math.floor(Math.random() * 1000000000).toString()
+        const outputBlinding2 = Math.floor(Math.random() * 1000000000).toString()
+
+        // Build output UTXOs for encryption
         const outputs = [
             new BrowserUtxo({
                 hasher: this.hasher!,
                 amount: outputAmount,
                 keypair,
+                blinding: BigInt(outputBlinding1),
                 index: currentIndex,
             }),
             new BrowserUtxo({
                 hasher: this.hasher!,
                 amount: BigInt(0),
                 keypair,
+                blinding: BigInt(outputBlinding2),
                 index: currentIndex + 1,
             }),
         ]
@@ -495,7 +557,7 @@ export class BrowserPrivacyCash {
         const encryptedOutput1 = await this.encryptionService.encrypt(outputs[0].serialize())
         const encryptedOutput2 = await this.encryptionService.encrypt(outputs[1].serialize())
 
-        // External data - convert all BigInts to strings for serialization
+        // External data
         const extData = {
             recipient: this.publicKey.toBase58(),
             extAmount: lamports.toString(),
@@ -504,39 +566,46 @@ export class BrowserPrivacyCash {
             fee: '0',
         }
 
-        // Calculate extDataHash
-        const extDataHash = this.computeExtDataHash(extData)
-
-        // Build circuit input - ensure all values are strings for snarkjs
-        const circuitInput = {
-            root: treeState.root.toString(),
-            inputNullifier: inputs.map((u) => u.getNullifier().toString()),
-            outputCommitment: outputs.map((u) => u.getCommitment().toString()),
-            publicAmount: publicAmount.toString(),
-            extDataHash: extDataHash.toString(),
-            inAmount: inputs.map((u) => u.amount.toString()),
-            inPrivateKey: inputs.map((u) => u.keypair.privkey.toString()),
-            inBlinding: inputs.map((u) => u.blinding.toString()),
-            inPathIndices: inputMerklePathIndices.map((idx) => idx.toString()),
-            inPathElements: inputMerklePaths.map((path) => path.map((el) => el.toString())),
-            outAmount: outputs.map((u) => u.amount.toString()),
-            outBlinding: outputs.map((u) => u.blinding.toString()),
-            outPubkey: outputs.map((u) => u.keypair.pubkey.toString()),
-            mintAddress: inputs[0].mintAddress.toString(),
+        return {
+            operation: 'deposit',
+            inputs: inputs.map((u) => ({
+                amount: u.amount.toString(),
+                blinding: u.blinding.toString(),
+                privateKey: u.keypair.privkey.toString(),
+                index: u.index || 0,
+                mintAddress: u.mintAddress || DEFAULT_MINT_ADDRESS,
+            })),
+            outputs: [
+                {
+                    amount: outputAmount.toString(),
+                    blinding: outputBlinding1,
+                    index: currentIndex,
+                },
+                {
+                    amount: '0',
+                    blinding: outputBlinding2,
+                    index: currentIndex + 1,
+                },
+            ],
+            root: treeState.root,
+            inputMerklePaths,
+            inputMerklePathIndices,
+            extData,
+            publicAmount,
+            utxoPrivateKey,
         }
-
-        return { circuitInput, extData }
     }
 
     /**
-     * Build withdraw proof inputs
+     * Build withdraw proof request for server
      */
-    private async buildWithdrawInput(
+    private async buildWithdrawProofRequest(
         lamports: number,
         existingUtxos: BrowserUtxo[],
         keypair: BrowserKeypair,
+        utxoPrivateKey: string,
         recipient: string
-    ): Promise<{ circuitInput: Record<string, unknown>; extData: unknown }> {
+    ): Promise<ServerProveRequest> {
         const treeState = await this.queryTreeState()
         const currentIndex = treeState.nextIndex
 
@@ -557,7 +626,6 @@ export class BrowserPrivacyCash {
             )
         )
 
-        // inPathIndices is the leaf index of each UTXO (flat array of numbers)
         const inputMerklePathIndices = inputs.map((u) => u.index || 0)
         const inputMerklePaths = proofs.map((p) => p.pathElements)
 
@@ -565,77 +633,74 @@ export class BrowserPrivacyCash {
         const inputSum = inputs.reduce((sum, u) => sum + u.amount, BigInt(0))
         const fee = BigInt(Math.floor(lamports * 0.003)) // 0.3% fee
         const changeAmount = inputSum - BigInt(lamports)
-        const publicAmount = (FIELD_SIZE - BigInt(lamports) + fee) % FIELD_SIZE
+        const publicAmount = ((FIELD_SIZE - BigInt(lamports) + fee) % FIELD_SIZE).toString()
 
-        // Build outputs (change UTXO + dummy)
+        // Build outputs
+        const outputBlinding1 = Math.floor(Math.random() * 1000000000).toString()
+        const outputBlinding2 = Math.floor(Math.random() * 1000000000).toString()
+
+        // Build output UTXOs for encryption
         const outputs = [
             new BrowserUtxo({
                 hasher: this.hasher!,
                 amount: changeAmount,
                 keypair,
+                blinding: BigInt(outputBlinding1),
                 index: currentIndex,
             }),
-            BrowserUtxo.dummy(keypair, this.hasher!),
+            new BrowserUtxo({
+                hasher: this.hasher!,
+                amount: BigInt(0),
+                keypair,
+                blinding: BigInt(outputBlinding2),
+                index: currentIndex + 1,
+            }),
         ]
-        outputs[1].index = currentIndex + 1
 
         // Encrypt outputs
         const encryptedOutput1 = await this.encryptionService.encrypt(outputs[0].serialize())
         const encryptedOutput2 = await this.encryptionService.encrypt(outputs[1].serialize())
 
         const extData = {
-            recipient: recipient,
+            recipient,
             extAmount: (-lamports).toString(), // Negative for withdraw
             encryptedOutput1: Array.from(encryptedOutput1),
             encryptedOutput2: Array.from(encryptedOutput2),
             fee: fee.toString(),
         }
 
-        const extDataHash = this.computeExtDataHash(extData)
-
-        const circuitInput = {
+        return {
+            operation: 'withdraw',
+            inputs: inputs.map((u) => ({
+                amount: u.amount.toString(),
+                blinding: u.blinding.toString(),
+                privateKey: u.keypair.privkey.toString(),
+                index: u.index || 0,
+                mintAddress: u.mintAddress || DEFAULT_MINT_ADDRESS,
+            })),
+            outputs: [
+                {
+                    amount: changeAmount.toString(),
+                    blinding: outputBlinding1,
+                    index: currentIndex,
+                },
+                {
+                    amount: '0',
+                    blinding: outputBlinding2,
+                    index: currentIndex + 1,
+                },
+            ],
             root: treeState.root,
-            inputNullifier: inputs.map((u) => u.getNullifier()),
-            outputCommitment: outputs.map((u) => u.getCommitment()),
-            publicAmount: publicAmount.toString(),
-            extDataHash,
-            inAmount: inputs.map((u) => u.amount.toString()),
-            inPrivateKey: inputs.map((u) => u.keypair.privkey),
-            inBlinding: inputs.map((u) => u.blinding.toString()),
-            inPathIndices: inputMerklePathIndices.map((idx) => idx.toString()),
-            inPathElements: inputMerklePaths.map((path) => path.map((el) => el.toString())),
-            outAmount: outputs.map((u) => u.amount.toString()),
-            outBlinding: outputs.map((u) => u.blinding.toString()),
-            outPubkey: outputs.map((u) => u.keypair.pubkey),
-            mintAddress: inputs[0].mintAddress,
+            inputMerklePaths,
+            inputMerklePathIndices,
+            extData,
+            publicAmount,
+            utxoPrivateKey,
         }
-
-        return { circuitInput, extData }
-    }
-
-    /**
-     * Compute the empty Merkle tree root using Poseidon hash
-     * This is what the root should be when the tree has no leaves
-     */
-    private computeEmptyMerkleRoot(): string {
-        if (!this.hasher) {
-            throw new Error('Hasher not initialized')
-        }
-
-        // Start with zero element
-        let currentZero = '0'
-
-        // For each level, compute poseidon(zero, zero)
-        for (let i = 0; i < MERKLE_TREE_DEPTH; i++) {
-            currentZero = this.hasher.poseidonHashString([currentZero, currentZero])
-        }
-
-        return currentZero
     }
 
     /**
      * Query Merkle tree state from relayer
-     * Falls back to mock state if relayer is unavailable (CORS issues)
      */
     private async queryTreeState(): Promise<{ root: string; nextIndex: number }> {
         try {
@@ -644,11 +709,10 @@ export class BrowserPrivacyCash {
             return response.json()
         } catch (error) {
             console.warn('[BrowserPrivacyCash] Relayer unavailable, using mock tree state:', error)
-            // Compute the correct empty Merkle root using Poseidon
-            const emptyRoot = this.computeEmptyMerkleRoot()
-            console.log('[BrowserPrivacyCash] Using computed empty root:', emptyRoot)
+            // For fresh deposit, use the computed empty root
+            // NOTE: The server will compute this correctly using hasher.rs
             return {
-                root: emptyRoot,
+                root: '0', // Server will compute correct empty root
                 nextIndex: 0,
             }
         }
@@ -656,56 +720,44 @@ export class BrowserPrivacyCash {
 
     /**
      * Fetch Merkle proof for a commitment
-     * Returns pathElements (sibling hashes) for the Merkle proof
-     * Note: pathIndices (leaf index) is stored on the UTXO itself
      */
     private async fetchMerkleProof(
         commitment: string
     ): Promise<{ pathIndices: number; pathElements: string[] }> {
-        const response = await fetch(
-            `${RELAYER_API_URL}/tree/proof?commitment=${commitment}`
-        )
+        const response = await fetch(`${RELAYER_API_URL}/tree/proof?commitment=${commitment}`)
         if (!response.ok) throw new Error('Failed to fetch Merkle proof')
         return response.json()
     }
 
     /**
-     * Compute external data hash for the circuit
-     */
-    private computeExtDataHash(extData: unknown): string {
-        // Simplified - real implementation uses Poseidon hash
-        // Use a replacer to handle BigInt values
-        const str = JSON.stringify(extData, (_, value) =>
-            typeof value === 'bigint' ? value.toString() : value
-        )
-        const bytes = new TextEncoder().encode(str)
-        let hash = BigInt(0)
-        for (const byte of bytes) {
-            hash = (hash * BigInt(256) + BigInt(byte)) % FIELD_SIZE
-        }
-        return hash.toString()
-    }
-
-    /**
      * Submit deposit transaction via relayer
-     * Note: May fail due to CORS if relayer doesn't support browser requests
      */
     private async submitDeposit(
-        proof: Groth16Proof,
-        publicSignals: string[],
-        extData: unknown,
+        proofResult: ServerProofResult,
+        extData: ServerProveRequest['extData'],
         lamports: number
     ): Promise<string> {
-        // Format proof for chain
-        const formattedProof = formatProofForChain(proof, publicSignals)
-
         try {
-            // Build and send transaction via relayer
             const response = await fetch(`${RELAYER_API_URL}/deposit`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    proof: formattedProof,
+                    proof: {
+                        proofA: proofResult.proofBytes.proofA,
+                        proofB: proofResult.proofBytes.proofB,
+                        proofC: proofResult.proofBytes.proofC,
+                        root: proofResult.publicInputsBytes[0],
+                        publicAmount: proofResult.publicInputsBytes[1],
+                        extDataHash: proofResult.publicInputsBytes[2],
+                        inputNullifiers: [
+                            proofResult.publicInputsBytes[3],
+                            proofResult.publicInputsBytes[4],
+                        ],
+                        outputCommitments: [
+                            proofResult.publicInputsBytes[5],
+                            proofResult.publicInputsBytes[6],
+                        ],
+                    },
                     extData,
                     senderAddress: this.publicKey.toBase58(),
                     amount: lamports,
@@ -720,11 +772,11 @@ export class BrowserPrivacyCash {
             const result = await response.json()
             return result.signature
         } catch (error) {
-            // CORS error - relayer doesn't support browser requests
             console.error('[BrowserPrivacyCash] Relayer submission failed:', error)
             throw new Error(
-                'PrivacyCash relayer is not accessible from browser due to CORS restrictions. ' +
-                'Please use the CLI or wait for backend proxy support.'
+                error instanceof Error
+                    ? error.message
+                    : 'PrivacyCash relayer submission failed. Please try again.'
             )
         }
     }
@@ -733,19 +785,31 @@ export class BrowserPrivacyCash {
      * Submit withdraw transaction via relayer
      */
     private async submitWithdraw(
-        proof: Groth16Proof,
-        publicSignals: string[],
-        extData: unknown,
+        proofResult: ServerProofResult,
+        extData: ServerProveRequest['extData'],
         lamports: number,
         recipient: string
     ): Promise<{ signature: string; fee: number }> {
-        const formattedProof = formatProofForChain(proof, publicSignals)
-
         const response = await fetch(`${RELAYER_API_URL}/withdraw`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                proof: formattedProof,
+                proof: {
+                    proofA: proofResult.proofBytes.proofA,
+                    proofB: proofResult.proofBytes.proofB,
+                    proofC: proofResult.proofBytes.proofC,
+                    root: proofResult.publicInputsBytes[0],
+                    publicAmount: proofResult.publicInputsBytes[1],
+                    extDataHash: proofResult.publicInputsBytes[2],
+                    inputNullifiers: [
+                        proofResult.publicInputsBytes[3],
+                        proofResult.publicInputsBytes[4],
+                    ],
+                    outputCommitments: [
+                        proofResult.publicInputsBytes[5],
+                        proofResult.publicInputsBytes[6],
+                    ],
+                },
                 extData,
                 recipient,
                 amount: lamports,
