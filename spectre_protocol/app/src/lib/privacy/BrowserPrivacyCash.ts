@@ -903,7 +903,7 @@ export class BrowserPrivacyCash {
                 units: 1_000_000
             })
 
-            const latestBlockhash = await this.connection.getLatestBlockhash()
+            const latestBlockhash = await this.connection.getLatestBlockhash({ commitment: 'finalized' })
 
             const messageV0 = new TransactionMessage({
                 payerKey: this.publicKey,
