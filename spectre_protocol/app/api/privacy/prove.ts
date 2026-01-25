@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import BN from 'bn.js'
 import { groth16 } from 'snarkjs'
-// @ts-expect-error - no types
+
 import { utils } from 'ffjavascript'
 import * as hasher from '@lightprotocol/hasher.rs'
 import { PublicKey } from '@solana/web3.js'
@@ -29,8 +29,7 @@ let circuitCache: { wasm: Uint8Array; zkey: Uint8Array } | null = null
 
 async function getLightWasm(): Promise<hasher.LightWasm> {
     if (!lightWasm) {
-        const factory = await hasher.WasmFactory.getInstance()
-        lightWasm = factory.create()
+        lightWasm = await hasher.WasmFactory.getInstance()
     }
     return lightWasm
 }
