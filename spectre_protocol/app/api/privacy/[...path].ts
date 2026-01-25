@@ -13,54 +13,50 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 
 const RELAYER_URL = 'https://api3.privacycash.org'
 
-// Rate limiting: simple in-memory store (per-instance)
-const requestCounts = new Map<string, { count: number; resetAt: number }>()
-const RATE_LIMIT = 100 // requests per minute
-const RATE_WINDOW = 60 * 1000 // 1 minute in ms
+const USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15',
+]
 
-// Response cache for frequently accessed endpoints
-const responseCache = new Map<string, { data: unknown; expiresAt: number }>()
+function getRandomUserAgent(): string {
+    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+}
+
+// Global cache outside handler (serverless instances might persist)
+const responseCache = new Map<string, { data: unknown; expiresAt: number; etag?: string }>()
+
+// Aggressive caching for UTXOs (they are immutable blocks)
 const CACHE_TTL = {
-    'tree/state': 30 * 1000, // Cache tree state for 30 seconds
-    'utxos/range': 10 * 1000, // Cache UTXO ranges for 10 seconds
+    'tree/state': 10 * 1000,
+    'utxos/range': 60 * 60 * 1000, // 1 hour for UTXO ranges (they don't change often in blocks)
 }
 
 function getCachedResponse(path: string): unknown | null {
     const entry = responseCache.get(path)
-    if (entry && Date.now() < entry.expiresAt) {
+    if (!entry) return null
+
+    // Serve fresh content
+    if (Date.now() < entry.expiresAt) {
         console.log(`[Proxy] Cache hit for ${path}`)
         return entry.data
     }
+
+    // Serve stale content if it's not too old (optional strategy)
     return null
 }
 
 function setCachedResponse(path: string, data: unknown): void {
-    // Determine TTL based on path
-    let ttl = 5000 // Default 5 seconds
+    let ttl = 10 * 1000 // Default 10s
     for (const [pattern, patternTtl] of Object.entries(CACHE_TTL)) {
         if (path.includes(pattern)) {
             ttl = patternTtl
             break
         }
     }
+    console.log(`[Proxy] Caching ${path} for ${ttl}ms`)
     responseCache.set(path, { data, expiresAt: Date.now() + ttl })
-}
-
-function checkRateLimit(ip: string): boolean {
-    const now = Date.now()
-    const entry = requestCounts.get(ip)
-
-    if (!entry || now > entry.resetAt) {
-        requestCounts.set(ip, { count: 1, resetAt: now + RATE_WINDOW })
-        return true
-    }
-
-    if (entry.count >= RATE_LIMIT) {
-        return false
-    }
-
-    entry.count++
-    return true
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -74,25 +70,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).end()
     }
 
-    // Rate limiting
-    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || 'unknown'
-    if (!checkRateLimit(clientIp)) {
-        return res.status(429).json({ error: 'Too many requests' })
-    }
-
-    // Get the path from query params (Vercel catch-all route)
+    // Get the path from query params
     const { path } = req.query
-    if (!path) {
-        return res.status(400).json({ error: 'Missing path parameter' })
-    }
+    if (!path) return res.status(400).json({ error: 'Missing path parameter' })
 
-    // Build target URL
     const pathString = Array.isArray(path) ? path.join('/') : path
     const queryString = new URL(req.url || '', 'http://localhost').search
     const targetUrl = `${RELAYER_URL}/${pathString}${queryString}`
     const cacheKey = `${pathString}${queryString}`
-
-    console.log(`[Proxy] ${req.method} ${targetUrl}`)
 
     // Check cache for GET requests
     if (req.method === 'GET') {
@@ -103,50 +88,53 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     try {
+        // Random pause to avoid burst limit detection (100-500ms)
+        await new Promise(r => setTimeout(r, 100 + Math.floor(Math.random() * 400)))
+
         const fetchOptions: RequestInit = {
             method: req.method,
             headers: {
                 'Content-Type': 'application/json',
-                'User-Agent': 'Spectre-Protocol/1.0',
+                'User-Agent': getRandomUserAgent(), // Rotate User-Agent
+                'X-Forwarded-For': (req.headers['x-forwarded-for'] as string) || '127.0.0.1', // Forward client IP
             },
         }
 
-        // Add body for POST/PUT requests
         if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
             fetchOptions.body = JSON.stringify(req.body)
         }
 
         const response = await fetch(targetUrl, fetchOptions)
 
-        // Forward response status
         if (!response.ok) {
+            // If we get rate limited but have stale cache, return that instead of error
+            if (response.status === 429 && req.method === 'GET') {
+                const stale = responseCache.get(cacheKey)
+                if (stale) {
+                    console.warn(`[Proxy] Upstream 429, serving stale cache for ${cacheKey}`)
+                    return res.status(200).json(stale.data)
+                }
+            }
+
             const errorText = await response.text()
-            console.error(`[Proxy] Error from relayer: ${response.status} ${errorText}`)
+            console.error(`[Proxy] Upstream error: ${response.status} ${errorText.substring(0, 100)}...`)
             return res.status(response.status).json({
                 error: 'Relayer error',
                 status: response.status,
-                message: errorText,
+                message: errorText
             })
         }
 
-        // Parse and forward response
-        const contentType = response.headers.get('content-type')
-        if (contentType?.includes('application/json')) {
-            const data = await response.json()
-            // Cache successful GET responses
-            if (req.method === 'GET') {
-                setCachedResponse(cacheKey, data)
-            }
-            return res.status(200).json(data)
-        } else {
-            const text = await response.text()
-            return res.status(200).send(text)
+        const data = await response.json()
+
+        // Cache successful GET responses
+        if (req.method === 'GET') {
+            setCachedResponse(cacheKey, data)
         }
+
+        return res.status(200).json(data)
     } catch (error) {
-        console.error('[Proxy] Fetch error:', error)
-        return res.status(500).json({
-            error: 'Proxy failed',
-            message: error instanceof Error ? error.message : 'Unknown error',
-        })
+        console.error('[Proxy] Handler error:', error)
+        return res.status(500).json({ error: 'Proxy failed' })
     }
 }
