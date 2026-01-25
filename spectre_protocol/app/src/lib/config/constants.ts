@@ -30,6 +30,9 @@ export const FUND_AGENT_IX_DISCRIMINATOR = Buffer.from([108, 252, 24, 134, 89, 1
 export const REQUEST_WITHDRAWAL_IX_DISCRIMINATOR = Buffer.from([251, 85, 121, 205, 56, 201, 12, 177])
 export const COMPLETE_WITHDRAWAL_IX_DISCRIMINATOR = Buffer.from([107, 98, 134, 131, 74, 120, 174, 121])
 
+// Account Discriminators
+export const WITHDRAWAL_REQUEST_ACCOUNT_DISCRIMINATOR = Buffer.from([242, 88, 147, 173, 182, 62, 229, 193])
+
 // Token mints
 export const USDC_DEVNET = new PublicKey(
   '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'

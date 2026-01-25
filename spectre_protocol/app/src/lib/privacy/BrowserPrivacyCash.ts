@@ -40,7 +40,9 @@ import {
     WITHDRAWAL_SEED,
     FUND_AGENT_IX_DISCRIMINATOR,
     INITIALIZE_IX_DISCRIMINATOR,
-    REQUEST_WITHDRAWAL_IX_DISCRIMINATOR
+    REQUEST_WITHDRAWAL_IX_DISCRIMINATOR,
+    // COMPLETE_WITHDRAWAL_IX_DISCRIMINATOR, // Used in completeWithdrawal
+    WITHDRAWAL_REQUEST_ACCOUNT_DISCRIMINATOR
 } from '@/lib/config/constants'
 
 // API URLs
@@ -143,6 +145,17 @@ interface ServerProofResult {
         proofC: number[]
     }
     publicInputsBytes: number[][]
+}
+
+export interface WithdrawalRequest {
+    vault: PublicKey
+    requester: PublicKey
+    userDeposit: PublicKey
+    recipient: PublicKey
+    amount: number
+    requestTime: number
+    status: number // 0 = Pending, 1 = Completed
+    pda: PublicKey
 }
 
 /**
@@ -1094,5 +1107,103 @@ export class BrowserPrivacyCash {
         })
 
         return signature
+    }
+
+    /**
+     * Get pending withdrawal requests for the current user
+     */
+    async getPendingWithdrawals(): Promise<WithdrawalRequest[]> {
+        this.ensureInitialized()
+
+        // WithdrawalRequest layout:
+        // discriminator: 8 bytes
+        // vault: 32 bytes
+        // requester: 32 bytes
+        // user_deposit: 32 bytes
+        // recipient: 32 bytes (SystemAccount)
+        // amount: 8 bytes (u64)
+        // request_time: 8 bytes (i64)
+        // status: 1 byte (enum) or more? Rust enum default is 1 byte usually, but Borsh might be 1.
+        // Let's assume standard Anchor account layout.
+
+        // Filter by requester = this.publicKey
+        // Offset = 8 (disc) + 32 (vault) = 40
+        // const filters = [...]
+
+        // CORRECTION: memcmp bytes should be base58 encoded string for web3.js
+        // My WITHDRAWAL_REQUEST_ACCOUNT_DISCRIMINATOR is a Buffer.
+        // I need to convert it to Base58.
+        // Since I don't have bs58 imported here, I will rely on the fact that I can pass a Buffer?
+        // No, web3.js GetProgramAccountsFilter memcmp.bytes is string.
+        // I'll skip the discriminator filter for now and filter manually or blindly trust the layout if I filter by size?
+        // Layout size: 8+32+32+32+32+8+8+1 = 153 bytes approx.
+
+        // Let's use the requester filter only, then verify discriminator manually.
+        // NOTE: web3.js expects base58 for memcmp bytes usually. Using Buffer/Hex usually fails in some RPCs or needs manual filtering.
+        // For now, I will manually inspect if simple filter works. 
+        // Actually, let's just use the `filters` array I defined above, assuming `bytesToHex` is NOT what we want for web3.js if it expects BS58.
+        // But `bytesToHex` returns a hex string. 
+        // If RPC expects base58, this filter will fail to match anything.
+        // So I will comment out the discriminator filter for now and verify manually in the loop as I implemented.
+
+        const accounts = await this.connection.getProgramAccounts(SPECTRE_PROGRAM_ID, {
+            filters: [
+                {
+                    memcmp: {
+                        offset: 40,
+                        bytes: this.publicKey.toBase58(),
+                    },
+                },
+            ]
+        })
+
+        const requests: WithdrawalRequest[] = []
+
+        for (const { pubkey, account } of accounts) {
+            try {
+                const data = account.data
+                // Verify discriminator
+                if (!data.subarray(0, 8).equals(WITHDRAWAL_REQUEST_ACCOUNT_DISCRIMINATOR)) {
+                    continue
+                }
+
+                // Decode
+                // 8: disc
+                // 8+32=40: vault
+                // 40+32=72: requester
+                // 72+32=104: user_deposit
+                // 104+32=136: recipient
+                // 136+8=144: amount (u64 le)
+                // 144+8=152: request_time (i64 le)
+                // 152+1=153: status (u8) or enum
+
+                // Note: I need to be careful with offsets.
+                const vault = new PublicKey(data.subarray(8, 40))
+                const requester = new PublicKey(data.subarray(40, 72))
+                const userDeposit = new PublicKey(data.subarray(72, 104))
+                const recipient = new PublicKey(data.subarray(104, 136))
+                const amount = new BN(data.subarray(136, 144), 'le').toNumber()
+                const requestTime = new BN(data.subarray(144, 152), 'le').toNumber()
+                const status = data[152] // 0 = Pending
+
+                // Only return Pending requests
+                if (status === 0) {
+                    requests.push({
+                        vault,
+                        requester,
+                        userDeposit,
+                        recipient,
+                        amount,
+                        requestTime,
+                        status,
+                        pda: pubkey
+                    })
+                }
+            } catch (e) {
+                console.warn('[BrowserPrivacyCash] Failed to decode account:', pubkey.toBase58(), e)
+            }
+        }
+
+        return requests.sort((a, b) => b.requestTime - a.requestTime)
     }
 }

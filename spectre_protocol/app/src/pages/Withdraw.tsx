@@ -8,7 +8,7 @@ import { useCompliance } from '@/hooks/useCompliance'
 import { formatSol, cn } from '@/lib/utils'
 
 export function Withdraw() {
-  const { unspentNotes, unshieldSol, unshieldLoading } = usePrivacy()
+  const { unspentNotes, unshieldSol, unshieldLoading, pendingWithdrawals, fetchPendingWithdrawals, completeWithdrawal, completeLoading } = usePrivacy()
   const { checkCompliance, isChecking } = useCompliance()
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null)
   const [recipientAddress, setRecipientAddress] = useState('')
@@ -20,6 +20,7 @@ export function Withdraw() {
     const result = await checkCompliance()
     if (result.passed) {
       setStep(2)
+      fetchPendingWithdrawals()
     }
   }
 
@@ -235,6 +236,38 @@ export function Withdraw() {
         </motion.div>
       </div>
 
+      {/* Pending Withdrawals Section */}
+      {
+        pendingWithdrawals.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="glass-card p-6 border-l-4 border-l-status-info"
+          >
+            <h3 className="text-lg font-semibold mb-4 text-status-info">Pending Withdrawals</h3>
+            <div className="space-y-3">
+              {pendingWithdrawals.map((req) => (
+                <div key={req.pda.toBase58()} className="flex items-center justify-between p-3 rounded-lg bg-white/5">
+                  <div>
+                    <p className="font-mono font-bold">{formatSol(req.amount / 1_000_000_000)} SOL</p>
+                    <p className="text-xs text-white/50">Requested: {new Date(req.requestTime * 1000).toLocaleString()}</p>
+                    <p className="text-xs text-white/50 font-mono">PDA: {req.pda.toBase58().slice(0, 8)}...</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    loading={completeLoading}
+                    onClick={() => completeWithdrawal(req.pda.toBase58())}
+                  >
+                    Claim Funds
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        )
+      }
+
       {/* Info section */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -268,7 +301,7 @@ export function Withdraw() {
           </div>
         </div>
       </motion.div>
-    </div>
+    </div >
   )
 }
 

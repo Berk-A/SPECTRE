@@ -12,6 +12,7 @@ import { usePrivacyStore, type StoredNote } from '@/stores/privacyStore'
 import { generateId } from '@/lib/utils'
 import { PRIVACY_DEMO_MODE } from '@/lib/config/constants'
 import { useBrowserPrivacy } from './useBrowserPrivacy'
+import type { WithdrawalRequest } from '@/lib/privacy/BrowserPrivacyCash'
 
 export interface ShieldResult {
   success: boolean
@@ -44,7 +45,9 @@ export function usePrivacy() {
 
   const [shieldLoading, setShieldLoading] = useState(false)
   const [unshieldLoading, setUnshieldLoading] = useState(false)
+  const [completeLoading, setCompleteLoading] = useState(false)
   const [initAttempted, setInitAttempted] = useState(false)
+  const [demoPendingWithdrawals, setDemoPendingWithdrawals] = useState<WithdrawalRequest[]>([])
 
   // Auto-initialize browser privacy when wallet connects (if not in demo mode)
   useEffect(() => {
@@ -265,6 +268,46 @@ export function usePrivacy() {
     [notes, addNote, calculateBalance]
   )
 
+
+  // Fetch Pending Withdrawals
+  const fetchPendingWithdrawals = useCallback(async () => {
+    if (PRIVACY_DEMO_MODE) {
+      return demoPendingWithdrawals
+    }
+    return await browserPrivacy.fetchPendingWithdrawals()
+  }, [browserPrivacy, demoPendingWithdrawals])
+
+  // Complete Withdrawal
+  const completeWithdrawal = useCallback(async (pda: string) => {
+    setCompleteLoading(true)
+    try {
+      if (PRIVACY_DEMO_MODE) {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+        setDemoPendingWithdrawals(prev => prev.filter(w => w.pda.toBase58() !== pda))
+        // const amount = 1_000_000_000 // 1 SOL
+        toast.success(`Successfully claimed 1 SOL`)
+        return { success: true, signature: 'demo_sig' }
+      } else {
+        const result = await browserPrivacy.completeWithdrawal(pda, (stage, percent) => {
+          console.log(`[Complete] ${stage}: ${percent}%`)
+        })
+        if (result.success) {
+          toast.success('Withdrawal completed!')
+          await fetchPendingWithdrawals()
+        } else {
+          toast.error(`Claim failed: ${result.error}`)
+        }
+        return result
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unknown error'
+      toast.error(msg)
+      return { success: false, error: msg }
+    } finally {
+      setCompleteLoading(false)
+    }
+  }, [browserPrivacy, fetchPendingWithdrawals])
+
   // Get shielded balance (use browser SDK balance if available)
   const shieldedBalanceSol = PRIVACY_DEMO_MODE
     ? storedBalanceSol / 1e9
@@ -276,9 +319,11 @@ export function usePrivacy() {
     unspentNotes: notes.filter((n) => !n.spent),
     shieldedBalanceSol,
     shieldedBalanceUsdc: shieldedBalanceUsdc / 1e9,
-    isLoading: storeLoading || shieldLoading || unshieldLoading || browserPrivacy.isLoading,
+    isLoading: storeLoading || shieldLoading || unshieldLoading || completeLoading || browserPrivacy.isLoading,
     shieldLoading,
     unshieldLoading,
+    completeLoading,
+    pendingWithdrawals: PRIVACY_DEMO_MODE ? demoPendingWithdrawals : browserPrivacy.pendingWithdrawals,
 
     // Privacy client state
     isInitialized: PRIVACY_DEMO_MODE ? true : browserPrivacy.isInitialized,
@@ -294,6 +339,8 @@ export function usePrivacy() {
     calculateBalance,
     fetchBalance: browserPrivacy.fetchBalance,
     clearCache: browserPrivacy.clearCache,
+    fetchPendingWithdrawals,
+    completeWithdrawal,
   }
 }
 
