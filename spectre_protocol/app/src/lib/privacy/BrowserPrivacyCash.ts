@@ -36,7 +36,7 @@ const PROVE_API_URL =
         ? '/api/privacy/prove' // Production: Vercel serverless
         : '/api/privacy/prove' // Same endpoint for local (needs Vercel dev)
 
-const FETCH_UTXOS_GROUP_SIZE = 100
+const FETCH_UTXOS_GROUP_SIZE = 2000
 
 // Field size for circuit calculations
 const FIELD_SIZE = BigInt(
@@ -243,7 +243,7 @@ export class BrowserPrivacyCash {
             // Try to fetch existing UTXOs for consolidation
             let existingUtxos: BrowserUtxo[] = []
             try {
-                existingUtxos = await this.fetchUtxos()
+                existingUtxos = await this.fetchUtxos((msg) => onProgress?.(msg, 12))
             } catch (fetchError) {
                 console.warn(
                     '[BrowserPrivacyCash] Could not fetch UTXOs, proceeding with fresh deposit:',
@@ -306,7 +306,7 @@ export class BrowserPrivacyCash {
         try {
             onProgress?.('Fetching UTXOs', 10)
 
-            const existingUtxos = await this.fetchUtxos()
+            const existingUtxos = await this.fetchUtxos((msg) => onProgress?.(msg, 15))
 
             // Check balance
             const totalBalance = existingUtxos.reduce((sum, utxo) => sum + utxo.amount, BigInt(0))
@@ -443,7 +443,13 @@ export class BrowserPrivacyCash {
             onProgress?.(`Decrypting UTXOs (${offset + encryptedOutputs.length})...`)
 
             // Try to decrypt each output
+            let processedCount = 0
             for (const encryptedHex of encryptedOutputs) {
+                // Yield to event loop every 50 items to keep UI responsive
+                if (++processedCount % 50 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 0))
+                }
+
                 try {
                     const encrypted = hexToBytes(encryptedHex)
                     const version = this.encryptionService.getEncryptionKeyVersion(encrypted)
