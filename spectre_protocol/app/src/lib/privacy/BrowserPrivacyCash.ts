@@ -974,25 +974,53 @@ export class BrowserPrivacyCash {
             const signedTransaction = await this.signTransaction(transaction)
 
             // 5. Serialize and Send
-            const serializedTransaction = Buffer.from(signedTransaction.serialize()).toString('base64')
+            // 5. Serialize and Send
+            console.log('[BrowserPrivacyCash] Submitting signed transaction directly to RPC (Devnet/Direct Mode)...')
 
-            console.log('[BrowserPrivacyCash] Submitting signed transaction directly to relayer...')
-            const response = await this.fetchWithRetry(`${RELAYER_API_URL}/deposit`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    signedTransaction: serializedTransaction,
-                    senderAddress: this.publicKey.toBase58(),
-                }),
-            })
+            try {
+                // Submit directly to RPC (Bypassing Mainnet Relayer for Devnet compatibility)
+                const signature = await this.connection.sendRawTransaction(signedTransaction.serialize(), {
+                    skipPreflight: false,
+                    preflightCommitment: 'confirmed'
+                })
 
-            if (!response.ok) {
-                const error = await response.text()
-                throw new Error(`Deposit failed: ${error}`)
+                console.log('[BrowserPrivacyCash] Transaction submitted directly to RPC. Signature:', signature)
+
+                // Confirm transaction
+                const confirmation = await this.connection.confirmTransaction({
+                    signature,
+                    blockhash: latestBlockhash.blockhash,
+                    lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+                }, 'confirmed')
+
+                if (confirmation.value.err) {
+                    throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`)
+                }
+
+                return signature
+
+            } catch (err) {
+                console.warn('[BrowserPrivacyCash] Direct RPC submission failed, falling back to Relayer (likely to fail on Devnet):', err)
+
+                // Fallback to Relayer (Original Logic - kept for Mainnet if Relayer supports it)
+                const serializedTransaction = Buffer.from(signedTransaction.serialize()).toString('base64')
+                const response = await this.fetchWithRetry(`${RELAYER_API_URL}/deposit`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        signedTransaction: serializedTransaction,
+                        senderAddress: this.publicKey.toBase58(),
+                    }),
+                })
+
+                if (!response.ok) {
+                    const error = await response.text()
+                    throw new Error(`Deposit failed: ${error}`)
+                }
+
+                const result = await response.json()
+                return result.signature
             }
-
-            const result = await response.json()
-            return result.signature
 
         } catch (error) {
             console.error('[BrowserPrivacyCash] Submit deposit failed:', error)
