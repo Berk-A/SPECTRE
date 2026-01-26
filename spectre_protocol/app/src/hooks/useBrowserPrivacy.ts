@@ -286,6 +286,8 @@ export function useBrowserPrivacy() {
         toast.info('Privacy cache cleared')
     }, [])
 
+
+
     return {
         // State
         isInitialized: state.isInitialized,

@@ -332,8 +332,16 @@ export function usePrivacy() {
     if (PRIVACY_DEMO_MODE) {
       return demoPendingWithdrawals
     }
+    // Call the wrapper from useBrowserPrivacy
     return await browserPrivacy.fetchPendingWithdrawals()
   }, [browserPrivacy, demoPendingWithdrawals])
+
+  // Automatically fetch pending withdrawals when initialized
+  useEffect(() => {
+    if (!PRIVACY_DEMO_MODE && browserPrivacy.isInitialized) {
+      fetchPendingWithdrawals()
+    }
+  }, [browserPrivacy.isInitialized, fetchPendingWithdrawals])
 
   // Complete Withdrawal
   const completeWithdrawal = useCallback(async (pda: string) => {
