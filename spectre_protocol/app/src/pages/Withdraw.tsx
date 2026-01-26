@@ -29,6 +29,7 @@ export function Withdraw() {
 
     const result = await unshieldSol(selectedNoteId, recipientAddress)
     if (result.success) {
+      await fetchPendingWithdrawals() // Refresh pending list immediately
       setStep(3)
     }
   }
@@ -214,13 +215,14 @@ export function Withdraw() {
                   <CheckCircle className="h-16 w-16 text-status-success mx-auto mb-4" />
                 </motion.div>
                 <h3 className="text-xl font-semibold mb-2">
-                  Withdrawal Complete!
+                  Withdrawal Requested
                 </h3>
                 <p className="text-white/60 mb-6">
-                  Your funds have been successfully withdrawn with compliance
-                  attestation.
+                  Your withdrawal request has been submitted. Please check the
+                  "Pending Withdrawals" section below to claim your funds
+                  once compliance is verified.
                 </p>
-                <Button onClick={() => setStep(1)}>Start New Withdrawal</Button>
+                <Button onClick={() => setStep(1)}>Back to Start</Button>
               </CardContent>
             </Card>
           )}
