@@ -141,6 +141,11 @@ export function useBrowserPrivacy() {
         }
     }, [])
 
+    const getUtxos = useCallback(async () => {
+        if (!clientRef.current?.isInitialized()) return []
+        return await clientRef.current.getUtxos()
+    }, [])
+
     // Fetch pending withdrawals
     const fetchPendingWithdrawals = useCallback(async () => {
         if (!clientRef.current?.isInitialized()) {
@@ -350,6 +355,7 @@ export function useBrowserPrivacy() {
         fetchPendingWithdrawals,
         completeWithdrawal,
         clearCache,
+        getUtxos,
 
         // Client ref for advanced usage
         client: clientRef.current,

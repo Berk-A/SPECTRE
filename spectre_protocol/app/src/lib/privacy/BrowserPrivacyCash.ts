@@ -273,6 +273,14 @@ export class BrowserPrivacyCash {
     }
 
     /**
+     * Get all active UTXOs (including recovered ones)
+     */
+    async getUtxos(onProgress?: (message: string) => void): Promise<BrowserUtxo[]> {
+        this.ensureInitialized()
+        return await this.fetchUtxos(onProgress)
+    }
+
+    /**
      * Shield (deposit) SOL
      */
     async shield(

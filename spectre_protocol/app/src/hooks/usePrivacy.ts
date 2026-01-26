@@ -49,21 +49,6 @@ export function usePrivacy() {
   const [initAttempted, setInitAttempted] = useState(false)
   const [demoPendingWithdrawals, setDemoPendingWithdrawals] = useState<WithdrawalRequest[]>([])
 
-  // Auto-initialize browser privacy when wallet connects (if not in demo mode)
-  useEffect(() => {
-    if (!PRIVACY_DEMO_MODE && connected && publicKey && !browserPrivacy.isInitialized && !browserPrivacy.isInitializing && !initAttempted) {
-      setInitAttempted(true)
-      browserPrivacy.initialize()
-    }
-  }, [connected, publicKey, browserPrivacy, initAttempted])
-
-  // Reset init attempted when wallet disconnects
-  useEffect(() => {
-    if (!connected) {
-      setInitAttempted(false)
-    }
-  }, [connected])
-
   // Calculate balance from unspent notes (demo mode)
   const calculateBalance = useCallback(() => {
     const unspentNotes = notes.filter((n) => !n.spent)
@@ -77,6 +62,45 @@ export function usePrivacy() {
     setShieldedBalance(solBalance, usdcBalance)
     return { solBalance, usdcBalance }
   }, [notes, setShieldedBalance])
+
+  // Auto-initialize browser privacy when wallet connects (if not in demo mode)
+  useEffect(() => {
+    if (!PRIVACY_DEMO_MODE && connected && publicKey && !browserPrivacy.isInitialized && !browserPrivacy.isInitializing && !initAttempted) {
+      setInitAttempted(true)
+      browserPrivacy.initialize().then(async () => {
+        // After init, fetch UTXOs and sync to store (handling recovery)
+        const utxos = await browserPrivacy.getUtxos()
+        utxos.forEach(utxo => {
+          // Check if note exists in store
+          const exists = notes.some(n => n.commitment === utxo.getCommitment())
+          if (!exists) {
+            // Add recovered/found note to store
+            console.log('[usePrivacy] Syncing found UTXO to store:', utxo.getCommitment())
+            addNote({
+              id: generateId(),
+              commitment: utxo.getCommitment(),
+              amount: Number(utxo.amount),
+              tokenType: 'SOL',
+              createdAt: new Date().toISOString(),
+              spent: false,
+              depositSignature: 'recovered_on_chain',
+              // Mark as encrypted/recovered if needed, or just standard note
+            })
+          }
+        })
+        calculateBalance() // Update UI balance
+      })
+    }
+  }, [connected, publicKey, browserPrivacy, initAttempted, notes, addNote, calculateBalance])
+
+  // Reset init attempted when wallet disconnects
+  useEffect(() => {
+    if (!connected) {
+      setInitAttempted(false)
+    }
+  }, [connected])
+
+
 
   // Shield SOL into privacy pool
   const shieldSol = useCallback(
