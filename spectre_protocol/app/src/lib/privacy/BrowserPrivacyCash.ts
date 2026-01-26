@@ -412,9 +412,21 @@ export class BrowserPrivacyCash {
 
             const recipientKey = _recipient ? new PublicKey(_recipient) : this.publicKey
 
-            const txHash = await this.requestWithdrawal(targetUtxo, lamports, recipientKey, (msg, pct) =>
-                onProgress?.(msg, 30 + pct * 0.7)
-            )
+            let txHash = ''
+            try {
+                txHash = await this.requestWithdrawal(targetUtxo, lamports, recipientKey, (msg, pct) =>
+                    onProgress?.(msg, 30 + pct * 0.7)
+                )
+            } catch (e: any) {
+                // If account already in use, it means request already pending
+                if (e.message?.includes('already in use') || e.message?.includes('0x0')) {
+                    console.log('[BrowserPrivacyCash] Withdrawal already pending (account exists). Proceeding.')
+                    txHash = 'pending_exists'
+                    onProgress?.('Withdrawal already pending', 100)
+                } else {
+                    throw e
+                }
+            }
 
             onProgress?.('Withdrawal requested', 100)
 
@@ -1322,33 +1334,32 @@ export class BrowserPrivacyCash {
 
         console.log('[BrowserPrivacyCash] Fetching pending withdrawals for:', this.publicKey.toBase58())
 
-        // Fetch ALL withdrawal requests for this user using memcmp
-        const accounts = await this.connection.getProgramAccounts(SPECTRE_PROGRAM_ID, {
-            filters: [
-                {
-                    memcmp: {
-                        offset: 40,
-                        bytes: this.publicKey.toBase58(),
-                    },
-                },
-            ]
-        })
+        // Fetch ALL accounts to debug filtering issues
+        const accounts = await this.connection.getProgramAccounts(SPECTRE_PROGRAM_ID)
 
-        console.log(`[BrowserPrivacyCash] Found ${accounts.length} potential withdrawal accounts`)
+        console.log(`[BrowserPrivacyCash] Found ${accounts.length} total program accounts. Filtering in memory...`)
 
         const requests: WithdrawalRequest[] = []
+        const myPubkey = this.publicKey.toBase58()
 
         for (const { pubkey, account } of accounts) {
             try {
                 const data = account.data
+                if (data.length < 153) continue // Too small
+
                 // Verify discriminator
                 if (!data.subarray(0, 8).equals(WITHDRAWAL_REQUEST_ACCOUNT_DISCRIMINATOR)) {
-                    console.log(`[BrowserPrivacyCash] Skipping account ${pubkey.toBase58()} - Discriminator mismatch`)
                     continue
                 }
 
                 const vault = new PublicKey(data.subarray(8, 40))
                 const requester = new PublicKey(data.subarray(40, 72))
+
+                // Check requester match
+                if (requester.toBase58() !== myPubkey) {
+                    continue
+                }
+
                 const userDeposit = new PublicKey(data.subarray(72, 104))
                 const recipient = new PublicKey(data.subarray(104, 136))
                 const amount = new BN(data.subarray(136, 144), 'le').toNumber()
