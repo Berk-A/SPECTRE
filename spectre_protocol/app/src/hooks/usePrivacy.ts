@@ -70,28 +70,39 @@ export function usePrivacy() {
       browserPrivacy.initialize().then(async () => {
         // After init, fetch UTXOs and sync to store (handling recovery)
         const utxos = await browserPrivacy.getUtxos()
+
+        // Use fresh state from store to ensure we don't add duplicates
+        const currentNotes = usePrivacyStore.getState().notes
+
+        let addedCount = 0
         utxos.forEach(utxo => {
-          // Check if note exists in store
-          const exists = notes.some(n => n.commitment === utxo.getCommitment())
+          // Strict deduplication by commitment
+          const exists = currentNotes.some(n => n.commitment === utxo.getCommitment())
           if (!exists) {
             // Add recovered/found note to store
-            console.log('[usePrivacy] Syncing found UTXO to store:', utxo.getCommitment())
-            addNote({
-              id: generateId(),
-              commitment: utxo.getCommitment(),
-              amount: Number(utxo.amount),
-              tokenType: 'SOL',
-              createdAt: new Date().toISOString(),
-              spent: false,
-              depositSignature: 'recovered_on_chain',
-              // Mark as encrypted/recovered if needed, or just standard note
-            })
+            // Double check against global store again in case of async race
+            if (!usePrivacyStore.getState().notes.some(n => n.commitment === utxo.getCommitment())) {
+              console.log('[usePrivacy] Syncing found UTXO to store:', utxo.getCommitment())
+              addNote({
+                id: generateId(),
+                commitment: utxo.getCommitment(),
+                amount: Number(utxo.amount),
+                tokenType: 'SOL',
+                createdAt: new Date().toISOString(),
+                spent: false,
+                depositSignature: 'recovered_on_chain',
+              })
+              addedCount++
+            }
           }
         })
-        calculateBalance() // Update UI balance
+
+        if (addedCount > 0) {
+          calculateBalance() // Update UI balance only if we added notes
+        }
       })
     }
-  }, [connected, publicKey, browserPrivacy, initAttempted, notes, addNote, calculateBalance])
+  }, [connected, publicKey, browserPrivacy, initAttempted, addNote, calculateBalance])
 
   // Reset init attempted and clear notes when wallet disconnects
   useEffect(() => {
