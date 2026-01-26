@@ -220,3 +220,31 @@ export class BrowserUtxo {
         )
     }
 }
+
+/**
+ * Recovered UTXO from on-chain data (Chain Recovery)
+ * Used when the blinding factor/note is lost but the commitment is known from the Chain.
+ * This allows withdrawal but not ZK proof generation (Phase 1 uses compliance check instead of ZK proof for withdrawal).
+ */
+export class RecoveredUtxo extends BrowserUtxo {
+    private recoveredCommitment: string
+
+    constructor(
+        hasher: PoseidonHasher,
+        amount: bigint,
+        commitment: string
+    ) {
+        // Initialize with dummy data
+        super({ hasher, amount, blinding: BigInt(0) })
+        this.recoveredCommitment = commitment
+    }
+
+    override getCommitment(): string {
+        return this.recoveredCommitment
+    }
+
+    // Override serialize to prevent implicit caching of invalid state
+    override serialize(): string {
+        throw new Error('Cannot serialize RecoveredUtxo (blinding factor unknown)')
+    }
+}

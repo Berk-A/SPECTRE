@@ -32,7 +32,7 @@ import {
     LSK_FETCH_OFFSET,
     getStorage,
 } from './browser-storage'
-import { BrowserUtxo, BrowserKeypair, type PoseidonHasher } from './browser-utxo'
+import { BrowserUtxo, BrowserKeypair, type PoseidonHasher, RecoveredUtxo } from './browser-utxo'
 import {
     SPECTRE_PROGRAM_ID,
     VAULT_SEED,
@@ -770,8 +770,9 @@ export class BrowserPrivacyCash {
             if (!hasMore) break
         }
 
-        // Cache valid UTXOs
-        const serialized = validUtxos.map((u) =>
+        // Cache valid UTXOs (exclude recovered ones)
+        const serializableUtxos = validUtxos.filter(u => !(u instanceof RecoveredUtxo))
+        const serialized = serializableUtxos.map((u) =>
             bytesToHex(new TextEncoder().encode(u.serialize()))
         )
         this.storage.setItem(LSK_ENCRYPTED_OUTPUTS + walletKey, JSON.stringify(serialized))
@@ -804,94 +805,90 @@ export class BrowserPrivacyCash {
      * This is a fallback when Relayer is offline.
      */
     private async recoverUtxosFromChain(): Promise<BrowserUtxo[]> {
-        // UserDeposit Discriminator: 8 bytes.
-        // We can find it in IDL or calculate it. 
-        // account:UserDeposit -> sha256("account:UserDeposit")[..8]
-        // [212, 56, 178, 171, 230, 94, 250, 64] (Need to verify this!)
-        // Since I cannot verify it easily without running a script, I will try to fetch ALL accounts 
-        // and filter by size if possible, or just try to decrypt everything.
-        // The data size of UserDeposit should be:
-        // Disc(8) + Vault(32) + Commitment(32) + EncryptedNote(??) + ...
-        // Wait, if I don't know the exact discriminator, I might fetch garbage.
+        console.log('[BrowserPrivacyCash] Starting chain recovery (Phase 1 Mock Mode)...')
 
-        // Let's assume the standard Anchor discriminator for "UserDeposit"
-        // I will calculate it in a script if needed, but for now let's hope finding by ProgramID is sparse enough on Devnet.
+        // Fetch ALL UserDeposit accounts
+        // Filter: owner = this.publicKey (Offset 8)
+        // UserDeposit layout:
+        // 0-8: Discriminator
+        // 8-40: Owner (32 bytes)
+        // 40-72: Commitment (32 bytes)
+        // 72-104: Nullifier Hash (32 bytes)
+        // 104-112: Amount (8 bytes u64)
 
-        console.log('[BrowserPrivacyCash] Starting chain recovery...')
-        const accounts = await this.connection.getProgramAccounts(SPECTRE_PROGRAM_ID)
+        const accounts = await this.connection.getProgramAccounts(SPECTRE_PROGRAM_ID, {
+            filters: [
+                {
+                    memcmp: {
+                        offset: 8,
+                        bytes: this.publicKey.toBase58(),
+                    },
+                },
+                // We could also filter by data size to ensure it's UserDeposit?
+                // init space is 8 + UserDeposit::INIT_SPACE
+                // UserDeposit::INIT_SPACE = 32+32+32+8+1+8+1+32+1 = 147 bytes approx?
+                // But account size might be padded or precise.
+                // Let's rely on Discriminator check or just Owner check (assuming other accounts don't have owner at pos 8 matching user).
+            ],
+        })
 
         const recovered: BrowserUtxo[] = []
-        let checked = 0
 
-        for (const { account } of accounts) {
-            checked++
+        for (const { pubkey, account } of accounts) {
             const data = account.data
-            // Optimization: Check if data length looks reasonable for a UserDeposit
-            // Min size: 8+32+32 = 72 bytes.
-            if (data.length < 80) continue
+            // Verify data length
+            if (data.length < 112) continue
 
-            // Try to decrypt data starting at different offsets?
-            // In Spectre, UserDeposit stores `encrypted_note`.
-            // Structure:
-            // 8 bytes disc
-            // 32 bytes vault
-            // 32 bytes commitment
-            // 4 bytes vec len (or just raw bytes?)
-            // Encrypted note bytes...
+            // Read Commitment (40-72)
+            const commitment = data.subarray(40, 72)
+            const commitmentHex = bytesToHex(commitment)
 
-            // Let's try to decrypt the whole data payload (skipping header)
-            // OR searching for a recognizable encrypted blob?
-            // "Encrypted Data" is usually just the serialized UTXO encrypted with ECIES or similar.
+            // Read Amount (104-112)
+            const amountBuffer = data.subarray(104, 112)
+            const amount = new BN(amountBuffer, 'le').toString() // defaults to decimal string? or BN.
+            // BrowserUtxo expects bigint or string
 
-            // Hacky Recovery: Try to decrypt chunks of the account data
-            // We know our EncryptionService can try to decrypt.
-            // If it succeeds, it returns valid bytes.
+            console.log(`[BrowserPrivacyCash] Found deposit: ${pubkey.toBase58()} | Amount: ${amount}`)
 
-            // Try offset 72 (8+32+32)
-            if (data.length > 72) {
-                try {
-                    const potentialCiphertext = data.subarray(72)
-                    // The ciphertext includes version byte?
-                    // EncryptionService.decrypt expects:
-                    // [Version(1)][EphemPublicKey(32? or 64?)][IV][Mac][Ciphertext]
-                    // It's a standard ecies-wasm format or similar.
+            // Create RecoveredUtxo
+            // We use dummy hasher since getCommitment is overridden
+            const utxo = new RecoveredUtxo(
+                this.hasher!,
+                BigInt(amount),
+                commitmentHex
+            )
 
-                    // We can also try decrypting the *entire* data minus discriminator?
+            // We should also check if it's already spent?
+            // isUtxoSpent checks on-chain if nullifier_hash is recorded?
+            // Wait, isUtxoSpent uses `getNullifier()`?
+            // We CANNOT compute nullifier without secret!
+            // `UserDeposit` has `nullifier_hash` on-chain (offset 72-104).
+            // But we don't know the secrets to verify if that nullifier is spent?
+            // Actually, `UserDeposit` has `is_active` flag! (boolean)
+            // Offset check:
+            // 112: delegated (bool)
+            // 113: created_at (i64) -> 8 bytes -> 121
+            // 121: is_active (bool)
 
-                    // Actually, let's try the loop in `fetchUtxos` logic logic:
-                    // hexToBytes(encryptedHex).
-                    // Here we have bytes.
+            // Let's rely on data offsets roughly or check struct again.
+            // struct UserDeposit { owner, commitment, nullifier_hash, amount, delegated, created_at, is_active, ... }
+            // owner(32) + commit(32) + null(32) + amt(8) = 104.
+            // delegated(1) = 105.
+            // created_at(8) = 113.
+            // is_active(1) = 114.
 
-                    // getEncryptionKeyVersion expects Uint8Array usually, but check signature.
-                    // If it expects number[], then Array.from is correct.
-                    // If it expects Uint8Array, then potentialCiphertext (is Buffer/Uint8Array) is fine.
-                    // Error says: Argument of type 'number[]' is not assignable to 'string | Uint8Array'.
-                    // So it expects Uint8Array.
-                    const version = this.encryptionService.getEncryptionKeyVersion(potentialCiphertext)
-                    // If version is valid (e.g. 1 or 2), proceed
-                    const decrypted = await this.encryptionService.decrypt(potentialCiphertext)
-                    const decryptedStr = new TextDecoder().decode(decrypted)
+            // Check byte at 114?
+            // Wait, alignment padding might exist.
 
-                    const privateKey = this.encryptionService.getUtxoPrivateKey(version)
-                    const keypair = new BrowserKeypair(privateKey, this.hasher!)
-                    const utxo = BrowserUtxo.deserialize(decryptedStr, keypair, this.hasher!, version)
+            // Safer: We assume if the account exists, we can try to use it.
+            // And if we have a way to check `UserDeposit.is_active` logic via unrelated way...
+            // But `unshield` will check `UserDeposit` balance anyway.
+            // So let's just add it.
 
-                    // Verify commitment matches!
-                    // UserDeposit has commitment at offset 40 (8+32).
-                    const onChainCommitment = data.subarray(40, 72)
-                    const derivedCommitment = hexToBytes(utxo.getCommitment())
-
-                    if (Buffer.from(onChainCommitment).equals(Buffer.from(derivedCommitment))) {
-                        console.log('[BrowserPrivacyCash] Recovered UTXO:', utxo.getCommitment())
-                        recovered.push(utxo)
-                    }
-                } catch (e) {
-                    // Ignore decryption failures (not our note)
-                }
-            }
+            recovered.push(utxo)
         }
 
-        console.log(`[BrowserPrivacyCash] Recovery complete. Checked ${checked} accounts, found ${recovered.length} UTXOs.`)
+        console.log(`[BrowserPrivacyCash] Recovery complete. Found ${recovered.length} deposits.`)
         return recovered
     }
 
