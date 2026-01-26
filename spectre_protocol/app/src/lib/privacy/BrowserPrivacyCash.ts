@@ -947,7 +947,11 @@ export class BrowserPrivacyCash {
         let inputs: BrowserUtxo[]
         let inputMerklePaths: string[][]
 
-        if (existingUtxos.length === 0) {
+        // Filter out RecoveredUtxos (we can't generate proofs for them as we don't have private keys/blinding)
+        // Also filter out any UTXOs that we might not be able to get proofs for (safety)
+        const proveableUtxos = existingUtxos.filter(u => !(u instanceof RecoveredUtxo))
+
+        if (proveableUtxos.length === 0) {
             // Fresh deposit: use dummy inputs
             inputs = [
                 BrowserUtxo.dummy(keypair, this.hasher!),
@@ -1228,7 +1232,7 @@ export class BrowserPrivacyCash {
      * Submit complete_withdrawal transaction
      */
     async completeWithdrawal(
-        utxo: BrowserUtxo,
+        withdrawalRequestPda: string,
         onProgress?: (stage: string, percent: number) => void
     ): Promise<string> {
         console.log('[BrowserPrivacyCash] Constructing complete_withdrawal transaction...')
@@ -1236,33 +1240,26 @@ export class BrowserPrivacyCash {
             COMPLETE_WITHDRAWAL_IX_DISCRIMINATOR: DISC
         } = await import('@/lib/config/constants')
 
-        onProgress?.('Deriving PDAs', 10)
+        onProgress?.('Fetching request details', 10)
 
-        // Vault
+        // 1. Fetch the withdrawal request account to get the userDeposit key
+        const requestPubkey = new PublicKey(withdrawalRequestPda)
+        const accountInfo = await this.connection.getAccountInfo(requestPubkey)
+        if (!accountInfo) throw new Error('Withdrawal Request account not found')
+
+        // Decode to find userDeposit (offset 72 in our assumed layout)
+        // 8 (disc) + 32 (vault) + 32 (requester) = 72
+        // user_deposit is at 72-104
+        const userDepositPubkey = new PublicKey(accountInfo.data.subarray(72, 104))
+
+        // 2. Derive Vault (we need it for the instruction keys)
         const [vaultPDA] = PublicKey.findProgramAddressSync(
             [Buffer.from(VAULT_SEED), this.publicKey.toBuffer()],
             SPECTRE_PROGRAM_ID
         )
 
-        // UserDeposit
-        const commitmentBytes = hexToBytes(utxo.getCommitment())
-        const [userDepositPDA] = PublicKey.findProgramAddressSync(
-            [Buffer.from(USER_DEPOSIT_SEED), vaultPDA.toBuffer(), commitmentBytes],
-            SPECTRE_PROGRAM_ID
-        )
-
-        // WithdrawalRequest: [WITHDRAWAL_SEED, Vault, Requester, UserDeposit]
-        const [withdrawalRequestPDA] = PublicKey.findProgramAddressSync(
-            [
-                Buffer.from(WITHDRAWAL_SEED),
-                vaultPDA.toBuffer(),
-                this.publicKey.toBuffer(),
-                userDepositPDA.toBuffer()
-            ],
-            SPECTRE_PROGRAM_ID
-        )
-
-        console.log(`[BrowserPrivacyCash] Completing withdrawal for: ${withdrawalRequestPDA.toBase58()}`)
+        console.log(`[BrowserPrivacyCash] Completing withdrawal for: ${withdrawalRequestPda}`)
+        console.log(`[BrowserPrivacyCash] User Deposit: ${userDepositPubkey.toBase58()}`)
 
         // Instruction: [Discriminator]
         const instructionData = DISC
@@ -1271,8 +1268,8 @@ export class BrowserPrivacyCash {
             keys: [
                 { pubkey: this.publicKey, isSigner: true, isWritable: true }, // requester
                 { pubkey: vaultPDA, isSigner: false, isWritable: true }, // vault (mut)
-                { pubkey: userDepositPDA, isSigner: false, isWritable: true }, // user_deposit (mut)
-                { pubkey: withdrawalRequestPDA, isSigner: false, isWritable: true }, // withdrawal_request (mut)
+                { pubkey: userDepositPubkey, isSigner: false, isWritable: true }, // user_deposit (mut)
+                { pubkey: requestPubkey, isSigner: false, isWritable: true }, // withdrawal_request (mut)
                 { pubkey: this.publicKey, isSigner: false, isWritable: true }, // recipient (mut, requester receives funds)
                 { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
             ],
