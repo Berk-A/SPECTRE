@@ -93,10 +93,12 @@ export function usePrivacy() {
     }
   }, [connected, publicKey, browserPrivacy, initAttempted, notes, addNote, calculateBalance])
 
-  // Reset init attempted when wallet disconnects
+  // Reset init attempted and clear notes when wallet disconnects
   useEffect(() => {
     if (!connected) {
       setInitAttempted(false)
+      usePrivacyStore.getState().clearNotes() // Clear persisted notes on disconnect
+      console.log('[usePrivacy] Wallet disconnected, cleared privacy store.')
     }
   }, [connected])
 
@@ -193,14 +195,18 @@ export function usePrivacy() {
       setUnshieldLoading(true)
 
       try {
+        console.log('[usePrivacy] Starting unshield process...', { amountOrNoteId, recipientAddress })
         if (PRIVACY_DEMO_MODE) {
           // Demo mode: find note by ID and simulate unshield
           const noteId = typeof amountOrNoteId === 'string' ? amountOrNoteId : ''
           const note = notes.find((n) => n.id === noteId)
 
           if (!note) {
+            console.error('[usePrivacy] Note not found:', noteId)
             return { success: false, error: 'Note not found' }
           }
+          // ... (rest of demo mode)
+
 
           if (note.spent) {
             return { success: false, error: 'Note already spent' }
@@ -223,14 +229,31 @@ export function usePrivacy() {
 
         // Production: use BrowserPrivacyCash
         if (!browserPrivacy.isInitialized) {
+          console.error('[usePrivacy] Privacy client not initialized')
           return { success: false, error: 'Privacy client not initialized' }
         }
 
-        const amountSol = typeof amountOrNoteId === 'number' ? amountOrNoteId : 0
+        let amountSol = 0
+        if (typeof amountOrNoteId === 'number') {
+          amountSol = amountOrNoteId
+        } else {
+          // It's a note ID, find the note
+          const n = notes.find(note => note.id === amountOrNoteId)
+          if (n) {
+            amountSol = n.amount / 1e9 // Convert lamports to SOL
+            console.log('[usePrivacy] Found note for unshield:', n.id, 'Amount:', amountSol)
+          } else {
+            console.error('[usePrivacy] Note not found for unshield:', amountOrNoteId)
+            return { success: false, error: 'Note not found' }
+          }
+        }
+
         if (amountSol <= 0) {
+          console.error('[usePrivacy] Invalid unshield amount:', amountSol)
           return { success: false, error: 'Invalid amount' }
         }
 
+        console.log('[usePrivacy] Calling browserPrivacy.unshield with:', { amountSol, recipientAddress })
         const result = await browserPrivacy.unshield(amountSol, recipientAddress, (stage, percent) => {
           console.log(`[Unshield] ${stage}: ${percent}%`)
         })
