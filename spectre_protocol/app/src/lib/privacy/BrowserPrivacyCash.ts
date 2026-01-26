@@ -783,6 +783,32 @@ export class BrowserPrivacyCash {
         }
 
         // Cache valid UTXOs (exclude recovered ones)
+        // ... (existing cache logic) ...
+
+        // FORCE CHAIN RECOVERY ON STARTUP (Phase 1 Fix)
+        // Even if Relayer returns data, it might miss our direct deposits.
+        // We always scan the chain on the first fetch to ensure balance correctness.
+        if (offset === 0 || validUtxos.length === 0) {
+            console.log('[BrowserPrivacyCash] Performing mandatory chain recovery check...')
+            try {
+                const recovered = await this.recoverUtxosFromChain()
+                let newFound = 0
+                recovered.forEach(u => {
+                    // Check duplicates
+                    const exists = validUtxos.some(v => v.getCommitment() === u.getCommitment())
+                    if (!exists) {
+                        validUtxos.push(u)
+                        newFound++
+                    }
+                })
+                if (newFound > 0) {
+                    console.log(`[BrowserPrivacyCash] Chain recovery found ${newFound} additional deposits`)
+                }
+            } catch (e) {
+                console.warn('[BrowserPrivacyCash] Chain recovery failed:', e)
+            }
+        }
+
         const serializableUtxos = validUtxos.filter(u => !(u instanceof RecoveredUtxo))
         const serialized = serializableUtxos.map((u) =>
             bytesToHex(new TextEncoder().encode(u.serialize()))
