@@ -729,7 +729,19 @@ export class BrowserPrivacyCash {
                 break // Break loop since we did full chain scan
             }
 
-            if (encryptedOutputs.length === 0) break
+            if (encryptedOutputs.length === 0) {
+                // If Relayer finds nothing, we MUST check chain in Phase 1
+                // because Relayer might not be indexing our direct deposits yet.
+                if (offset === 0) {
+                    console.log('[BrowserPrivacyCash] Relayer empty, checking chain recovery...')
+                    const recovered = await this.recoverUtxosFromChain()
+                    recovered.forEach(u => {
+                        const exists = validUtxos.some(v => v.getCommitment() === u.getCommitment())
+                        if (!exists) validUtxos.push(u)
+                    })
+                }
+                break
+            }
 
             onProgress?.(`Decrypting UTXOs (${offset + encryptedOutputs.length})...`)
 
