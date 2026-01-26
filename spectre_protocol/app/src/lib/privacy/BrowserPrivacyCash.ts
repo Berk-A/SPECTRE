@@ -410,7 +410,9 @@ export class BrowserPrivacyCash {
 
             onProgress?.('Requesting withdrawal', 30)
 
-            const txHash = await this.requestWithdrawal(targetUtxo, lamports, (msg, pct) =>
+            const recipientKey = _recipient ? new PublicKey(_recipient) : this.publicKey
+
+            const txHash = await this.requestWithdrawal(targetUtxo, lamports, recipientKey, (msg, pct) =>
                 onProgress?.(msg, 30 + pct * 0.7)
             )
 
@@ -1159,6 +1161,7 @@ export class BrowserPrivacyCash {
     private async requestWithdrawal(
         utxo: BrowserUtxo,
         amount: number,
+        recipient: PublicKey,
         onProgress?: (stage: string, percent: number) => void
     ): Promise<string> {
         console.log('[BrowserPrivacyCash] Constructing request_withdrawal transaction...')
@@ -1204,6 +1207,7 @@ export class BrowserPrivacyCash {
                 { pubkey: vaultPDA, isSigner: false, isWritable: false },     // vault
                 { pubkey: userDepositPDA, isSigner: false, isWritable: true }, // user_deposit
                 { pubkey: withdrawalRequestPDA, isSigner: false, isWritable: true }, // withdrawal_request
+                { pubkey: recipient, isSigner: false, isWritable: false }, // recipient
                 { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
             ],
             programId: SPECTRE_PROGRAM_ID,
