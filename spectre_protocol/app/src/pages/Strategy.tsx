@@ -72,7 +72,7 @@ export function Strategy() {
           </div>
           <h1 className="text-2xl font-bold">TEE Layer</h1>
           {!TEE_DEMO_MODE && (
-            <Badge variant="info" className="text-xs">On-Chain</Badge>
+            <Badge variant="secondary" className="text-xs">On-Chain</Badge>
           )}
         </div>
         <p className="text-white/60">

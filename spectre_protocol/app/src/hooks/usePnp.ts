@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useWallet, useConnection } from '@solana/wallet-adapter-react'
-import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js'
+import { LAMPORTS_PER_SOL } from '@solana/web3.js'
 import { toast } from 'sonner'
 import { useSpectreClient } from './useSpectreClient'
 import {
@@ -13,7 +13,7 @@ import {
 } from '@/stores/tradingStore'
 import { generateId } from '@/lib/utils'
 import { PNP_DEMO_MODE as DEMO_MODE, PRICE_SCALE } from '@/lib/config/constants'
-import { SpectreTradeClient, type OnChainPosition } from '@/lib/trading/SpectreTradeClient'
+import { SpectreTradeClient } from '@/lib/trading/SpectreTradeClient'
 
 export type TradeSide = 'yes' | 'no'
 

@@ -20,7 +20,6 @@ import {
     INITIALIZE_STRATEGY_IX_DISCRIMINATOR,
     SET_STRATEGY_PARAMS_IX_DISCRIMINATOR,
     GENERATE_TRADE_SIGNAL_IX_DISCRIMINATOR,
-    STRATEGY_CONFIG_ACCOUNT_DISCRIMINATOR,
 } from '@/lib/config/constants'
 
 // Strategy parameters matching the on-chain StrategyParams struct

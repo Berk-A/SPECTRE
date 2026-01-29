@@ -78,6 +78,7 @@ interface UnshieldResult {
 interface DelegationResult {
   success: boolean
   signature?: string
+  vaultPda?: string
   error?: string
 }
 

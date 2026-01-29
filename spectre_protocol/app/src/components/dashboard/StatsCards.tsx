@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Wallet, Shield, TrendingUp, BarChart3, Vault } from 'lucide-react'
+import { Wallet, TrendingUp, BarChart3, Vault } from 'lucide-react'
 import { Card } from '@/components/ui'
 import { formatSol, formatUsd, cn } from '@/lib/utils'
 
@@ -80,13 +80,14 @@ interface StatsCardsProps {
 
 export function StatsCards({
   walletBalance = 0,
-  shieldedBalance = 0,
+  shieldedBalance: _shieldedBalance = 0,
   vaultBalance = 0,
   availableForTrading = 0,
   positionsValue = 0,
   totalPnl = 0,
   positionsCount = 0,
 }: StatsCardsProps) {
+  void _shieldedBalance // Reserved for future use
   // Calculate P&L percentage (avoid division by zero)
   const pnlPercent = positionsValue > 0 ? (totalPnl / positionsValue) * 100 : 0
 

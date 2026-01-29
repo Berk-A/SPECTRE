@@ -27,7 +27,7 @@ export function Trade() {
           </div>
           <h1 className="text-2xl font-bold">Trading Layer</h1>
           {!PNP_DEMO_MODE && (
-            <Badge variant="info" className="text-xs">On-Chain</Badge>
+            <Badge variant="secondary" className="text-xs">On-Chain</Badge>
           )}
         </div>
         <p className="text-white/60">

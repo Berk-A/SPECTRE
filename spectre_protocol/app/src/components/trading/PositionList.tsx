@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { Briefcase, TrendingUp, TrendingDown, DollarSign, X, ExternalLink } from 'lucide-react'
 import { Card, Badge, Button } from '@/components/ui'
 import { usePnp } from '@/hooks/usePnp'
-import { formatUsd, formatSol, cn } from '@/lib/utils'
+import { formatSol, cn } from '@/lib/utils'
 import type { Position } from '@/stores/tradingStore'
 import { PNP_DEMO_MODE } from '@/lib/config/constants'
 
@@ -150,7 +150,7 @@ export function PositionList() {
           <h3 className="font-semibold">Positions</h3>
           <Badge variant="outline">{positions.length}</Badge>
           {!PNP_DEMO_MODE && positions.length > 0 && (
-            <Badge variant="info" className="text-xs">On-Chain</Badge>
+            <Badge variant="secondary" className="text-xs">On-Chain</Badge>
           )}
         </div>
 

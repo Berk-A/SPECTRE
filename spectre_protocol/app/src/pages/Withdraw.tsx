@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { ArrowDownToLine, Shield, CheckCircle, AlertTriangle, Vault, ExternalLink } from 'lucide-react'
+import { ArrowDownToLine, Shield, CheckCircle, AlertTriangle, Vault } from 'lucide-react'
 import { Button, Card, CardHeader, CardTitle, CardContent, Input, Badge } from '@/components/ui'
 import { ComplianceStatus } from '@/components/compliance'
 import { usePrivacy } from '@/hooks/usePrivacy'
