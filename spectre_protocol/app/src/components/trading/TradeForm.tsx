@@ -1,15 +1,27 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useWallet } from '@solana/wallet-adapter-react'
-import { Zap, TrendingUp, TrendingDown } from 'lucide-react'
+import { Zap, TrendingUp, TrendingDown, Vault, ExternalLink } from 'lucide-react'
 import { Button, Card, CardHeader, CardTitle, CardContent, Input } from '@/components/ui'
 import { usePnp, type TradeSide } from '@/hooks/usePnp'
-import { formatPercent, cn } from '@/lib/utils'
+import { usePrivacy } from '@/hooks/usePrivacy'
+import { formatPercent, formatSol, cn } from '@/lib/utils'
+import { LAMPORTS_PER_SOL } from '@solana/web3.js'
+import { PNP_DEMO_MODE } from '@/lib/config/constants'
 
 export function TradeForm() {
   const { connected } = useWallet()
   const { selectedMarket, executeTrade, isTrading } = usePnp()
+  const { availableForTrading, fetchVaultBalance, isInitialized } = usePrivacy()
   const [side, setSide] = useState<TradeSide>('yes')
   const [amount, setAmount] = useState('')
+  const [lastTxSignature, setLastTxSignature] = useState<string | null>(null)
+
+  // Refresh vault balance when initialized
+  useEffect(() => {
+    if (isInitialized && fetchVaultBalance) {
+      fetchVaultBalance()
+    }
+  }, [isInitialized, fetchVaultBalance])
 
   const handleTrade = async () => {
     if (!selectedMarket) return
@@ -20,6 +32,11 @@ export function TradeForm() {
     const result = await executeTrade(selectedMarket.address, side, amountNum)
     if (result.success) {
       setAmount('')
+      setLastTxSignature(result.signature || null)
+      // Refresh vault balance after trade
+      if (fetchVaultBalance) {
+        fetchVaultBalance()
+      }
     }
   }
 
@@ -30,6 +47,11 @@ export function TradeForm() {
     : 0
 
   const potentialShares = amount && price ? parseFloat(amount) / price : 0
+
+  // Available balance in SOL
+  const availableBalanceSol = availableForTrading / LAMPORTS_PER_SOL
+  const amountNum = parseFloat(amount) || 0
+  const hasInsufficientBalance = !PNP_DEMO_MODE && amountNum > availableBalanceSol && availableBalanceSol > 0
 
   return (
     <Card variant="glow-cyan">
@@ -113,14 +135,28 @@ export function TradeForm() {
               </div>
             </div>
 
+            {/* Vault Balance (when not in demo mode) */}
+            {!PNP_DEMO_MODE && availableBalanceSol > 0 && (
+              <div className="flex items-center justify-between p-2 rounded-lg bg-neon-cyan/5 border border-neon-cyan/20">
+                <div className="flex items-center gap-2 text-sm text-white/60">
+                  <Vault className="h-4 w-4 text-neon-cyan" />
+                  <span>Available:</span>
+                </div>
+                <span className="font-mono text-sm text-neon-cyan">
+                  {formatSol(availableBalanceSol)} SOL
+                </span>
+              </div>
+            )}
+
             {/* Amount input */}
             <Input
-              label="Amount (USDC)"
+              label="Amount (SOL)"
               type="number"
               placeholder="0.00"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               disabled={!connected || isTrading}
+              error={hasInsufficientBalance ? 'Insufficient vault balance' : undefined}
             />
 
             {/* Trade preview */}
@@ -132,14 +168,34 @@ export function TradeForm() {
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-white/60">Est. Shares</span>
-                  <span className="font-mono">{potentialShares.toFixed(2)}</span>
+                  <span className="font-mono">{potentialShares.toFixed(4)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-white/60">Max Payout</span>
                   <span className="font-mono text-status-success">
-                    ${potentialShares.toFixed(2)}
+                    {potentialShares.toFixed(4)} SOL
                   </span>
                 </div>
+                {!PNP_DEMO_MODE && (
+                  <div className="text-xs text-white/40 pt-1 border-t border-glass-border">
+                    Position will be recorded on-chain
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Last transaction link */}
+            {lastTxSignature && !PNP_DEMO_MODE && (
+              <div className="flex items-center justify-center gap-2 text-xs text-neon-cyan">
+                <a
+                  href={`https://explorer.solana.com/tx/${lastTxSignature}?cluster=devnet`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 hover:underline"
+                >
+                  <span>Last TX: {lastTxSignature.slice(0, 8)}...</span>
+                  <ExternalLink className="h-3 w-3" />
+                </a>
               </div>
             )}
 
@@ -148,14 +204,14 @@ export function TradeForm() {
               className="w-full"
               variant="primary"
               onClick={handleTrade}
-              disabled={!connected || isTrading || !amount || parseFloat(amount) <= 0}
+              disabled={!connected || isTrading || !amount || parseFloat(amount) <= 0 || hasInsufficientBalance}
               loading={isTrading}
             >
               {!connected
                 ? 'Connect Wallet'
                 : isTrading
-                ? 'Executing Trade...'
-                : `Buy ${side.toUpperCase()} for $${amount || '0'}`}
+                ? 'Opening Position...'
+                : `Buy ${side.toUpperCase()} for ${amount || '0'} SOL`}
             </Button>
           </>
         ) : (

@@ -158,6 +158,13 @@ export interface WithdrawalRequest {
     pda: PublicKey
 }
 
+export interface VaultBalance {
+    totalDeposited: number  // lamports
+    availableBalance: number  // lamports - available for trading
+    isDelegated: boolean
+    vaultPda: string
+}
+
 /**
  * Browser-compatible PrivacyCash client
  *
@@ -269,6 +276,78 @@ export class BrowserPrivacyCash {
         return {
             lamports: Number(totalLamports),
             sol: Number(totalLamports) / LAMPORTS_PER_SOL,
+        }
+    }
+
+    /**
+     * Get the on-chain vault balance
+     * This queries the SpectreVault PDA for actual on-chain state
+     *
+     * SpectreVault account layout:
+     * - 0-8: Discriminator
+     * - 8-40: authority (32 bytes)
+     * - 40: vault_bump (1 byte)
+     * - 41: vault_sol_bump (1 byte)
+     * - 42-50: total_deposited (8 bytes, u64 LE)
+     * - 50-58: available_balance (8 bytes, u64 LE)
+     * - 58: is_delegated (1 byte, bool)
+     */
+    async getVaultBalance(): Promise<VaultBalance | null> {
+        try {
+            // Derive Vault PDA
+            const [vaultPDA] = PublicKey.findProgramAddressSync(
+                [Buffer.from(VAULT_SEED), this.publicKey.toBuffer()],
+                SPECTRE_PROGRAM_ID
+            )
+
+            const accountInfo = await this.connection.getAccountInfo(vaultPDA)
+            if (!accountInfo) {
+                console.log('[BrowserPrivacyCash] Vault not initialized')
+                return null
+            }
+
+            const data = accountInfo.data
+
+            // Parse vault data
+            // total_deposited at offset 42 (8 bytes)
+            const totalDeposited = new BN(data.subarray(42, 50), 'le').toNumber()
+
+            // available_balance at offset 50 (8 bytes)
+            const availableBalance = new BN(data.subarray(50, 58), 'le').toNumber()
+
+            // is_delegated at offset 58 (1 byte)
+            const isDelegated = data[58] === 1
+
+            console.log(`[BrowserPrivacyCash] Vault balance: total=${totalDeposited}, available=${availableBalance}, delegated=${isDelegated}`)
+
+            return {
+                totalDeposited,
+                availableBalance,
+                isDelegated,
+                vaultPda: vaultPDA.toBase58()
+            }
+        } catch (error) {
+            console.error('[BrowserPrivacyCash] Failed to fetch vault balance:', error)
+            return null
+        }
+    }
+
+    /**
+     * Get the vault SOL account balance (actual lamports held)
+     */
+    async getVaultSolBalance(): Promise<number> {
+        try {
+            const [vaultSolPDA] = PublicKey.findProgramAddressSync(
+                [Buffer.from(VAULT_SEED), this.publicKey.toBuffer(), Buffer.from('sol')],
+                SPECTRE_PROGRAM_ID
+            )
+
+            const balance = await this.connection.getBalance(vaultSolPDA)
+            console.log(`[BrowserPrivacyCash] Vault SOL account balance: ${balance} lamports`)
+            return balance
+        } catch (error) {
+            console.error('[BrowserPrivacyCash] Failed to fetch vault SOL balance:', error)
+            return 0
         }
     }
 
@@ -1334,60 +1413,65 @@ export class BrowserPrivacyCash {
 
         console.log('[BrowserPrivacyCash] Fetching pending withdrawals for:', this.publicKey.toBase58())
 
-        // Fetch ALL accounts to debug filtering issues
-        const accounts = await this.connection.getProgramAccounts(SPECTRE_PROGRAM_ID)
+        try {
+            await new Promise(resolve => setTimeout(resolve, 500)) // Throttle
 
-        console.log(`[BrowserPrivacyCash] Found ${accounts.length} total program accounts. Filtering in memory...`)
+            const accounts = await this.connection.getProgramAccounts(SPECTRE_PROGRAM_ID, {
+                filters: [
+                    {
+                        memcmp: {
+                            offset: 40,
+                            bytes: this.publicKey.toBase58(),
+                        },
+                    },
+                ]
+            })
 
-        const requests: WithdrawalRequest[] = []
-        const myPubkey = this.publicKey.toBase58()
+            console.log(`[BrowserPrivacyCash] Found ${accounts.length} withdrawal accounts via filter`)
 
-        for (const { pubkey, account } of accounts) {
-            try {
-                const data = account.data
-                if (data.length < 153) continue // Too small
+            const requests: WithdrawalRequest[] = []
 
-                // Verify discriminator
-                if (!data.subarray(0, 8).equals(WITHDRAWAL_REQUEST_ACCOUNT_DISCRIMINATOR)) {
-                    continue
+            for (const { pubkey, account } of accounts) {
+                try {
+                    const data = account.data
+                    if (data.length < 153) continue
+
+                    // Verify discriminator
+                    if (!data.subarray(0, 8).equals(WITHDRAWAL_REQUEST_ACCOUNT_DISCRIMINATOR)) {
+                        continue
+                    }
+
+                    const vault = new PublicKey(data.subarray(8, 40))
+                    // Requester is checked by filter
+                    const requester = new PublicKey(data.subarray(40, 72))
+                    const userDeposit = new PublicKey(data.subarray(72, 104))
+                    const recipient = new PublicKey(data.subarray(104, 136))
+                    const amount = new BN(data.subarray(136, 144), 'le').toNumber()
+                    const requestTime = new BN(data.subarray(144, 152), 'le').toNumber()
+                    const status = data[152] // 0 = Pending
+
+                    console.log(`[BrowserPrivacyCash] Decoded withdrawal ${pubkey.toBase58()}: Status=${status}, Amount=${amount}`)
+
+                    if (status === 0) {
+                        requests.push({
+                            vault,
+                            requester,
+                            userDeposit,
+                            recipient,
+                            amount,
+                            requestTime,
+                            status,
+                            pda: pubkey
+                        })
+                    }
+                } catch (e) {
+                    console.warn('[BrowserPrivacyCash] Failed to decode account:', pubkey.toBase58(), e)
                 }
-
-                const vault = new PublicKey(data.subarray(8, 40))
-                const requester = new PublicKey(data.subarray(40, 72))
-
-                // Check requester match
-                if (requester.toBase58() !== myPubkey) {
-                    continue
-                }
-
-                const userDeposit = new PublicKey(data.subarray(72, 104))
-                const recipient = new PublicKey(data.subarray(104, 136))
-                const amount = new BN(data.subarray(136, 144), 'le').toNumber()
-                const requestTime = new BN(data.subarray(144, 152), 'le').toNumber()
-                const status = data[152] // 0 = Pending
-
-                console.log(`[BrowserPrivacyCash] Decoded withdrawal ${pubkey.toBase58()}: Status=${status}, Amount=${amount}`)
-
-                // Only return Pending requests
-                if (status === 0) {
-                    requests.push({
-                        vault,
-                        requester,
-                        userDeposit,
-                        recipient,
-                        amount,
-                        requestTime,
-                        status,
-                        pda: pubkey
-                    })
-                }
-            } catch (e) {
-                console.warn('[BrowserPrivacyCash] Failed to decode account:', pubkey.toBase58(), e)
             }
+            return requests.sort((a, b) => b.requestTime - a.requestTime)
+        } catch (error) {
+            console.error('[BrowserPrivacyCash] Failed to fetch withdrawal requests:', error)
+            return []
         }
-
-        console.log(`[BrowserPrivacyCash] Returning ${requests.length} pending requests`)
-
-        return requests.sort((a, b) => b.requestTime - a.requestTime)
     }
 }

@@ -1,18 +1,43 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { ArrowDownToLine, Shield, CheckCircle, AlertTriangle } from 'lucide-react'
+import { ArrowDownToLine, Shield, CheckCircle, AlertTriangle, Vault, ExternalLink } from 'lucide-react'
 import { Button, Card, CardHeader, CardTitle, CardContent, Input, Badge } from '@/components/ui'
 import { ComplianceStatus } from '@/components/compliance'
 import { usePrivacy } from '@/hooks/usePrivacy'
 import { useCompliance } from '@/hooks/useCompliance'
 import { formatSol, cn } from '@/lib/utils'
+import { LAMPORTS_PER_SOL } from '@solana/web3.js'
 
 export function Withdraw() {
-  const { unspentNotes, unshieldSol, unshieldLoading, pendingWithdrawals, fetchPendingWithdrawals, completeWithdrawal, completeLoading } = usePrivacy()
+  const {
+    unspentNotes,
+    unshieldSol,
+    unshieldLoading,
+    pendingWithdrawals,
+    fetchPendingWithdrawals,
+    completeWithdrawal,
+    completeLoading,
+    vaultSolBalance,
+    availableForTrading,
+    shieldedBalanceSol,
+    isInitialized,
+    fetchVaultBalance,
+  } = usePrivacy()
   const { checkCompliance, isChecking } = useCompliance()
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null)
   const [recipientAddress, setRecipientAddress] = useState('')
   const [step, setStep] = useState<1 | 2 | 3>(1)
+
+  // Refresh vault balance on mount
+  useEffect(() => {
+    if (isInitialized && fetchVaultBalance) {
+      fetchVaultBalance()
+    }
+  }, [isInitialized, fetchVaultBalance])
+
+  const vaultBalanceSol = vaultSolBalance / LAMPORTS_PER_SOL
+  const availableForTradingSol = availableForTrading / LAMPORTS_PER_SOL
+  const totalAvailable = shieldedBalanceSol + vaultBalanceSol
 
   const selectedNote = unspentNotes.find((n) => n.id === selectedNoteId)
 
@@ -50,6 +75,41 @@ export function Withdraw() {
         <p className="text-white/60">
           Withdraw funds with Range Protocol compliance verification
         </p>
+      </motion.div>
+
+      {/* Balance Summary */}
+      <motion.div
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.05 }}
+      >
+        <Card className="bg-gradient-to-r from-neon-purple/10 to-neon-cyan/10 border-neon-purple/30">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <Vault className="h-6 w-6 text-neon-purple" />
+              <div>
+                <p className="text-sm text-white/60">Total Available to Withdraw</p>
+                <p className="text-2xl font-mono font-bold">{formatSol(totalAvailable)} SOL</p>
+              </div>
+            </div>
+            <div className="flex gap-6 text-sm">
+              <div>
+                <p className="text-white/40">Shielded (Notes)</p>
+                <p className="font-mono text-neon-cyan">{formatSol(shieldedBalanceSol)} SOL</p>
+              </div>
+              <div>
+                <p className="text-white/40">Vault Balance</p>
+                <p className="font-mono text-neon-purple">{formatSol(vaultBalanceSol)} SOL</p>
+              </div>
+              <div>
+                <p className="text-white/40">In Positions</p>
+                <p className="font-mono text-status-warning">
+                  {formatSol(vaultBalanceSol - availableForTradingSol)} SOL
+                </p>
+              </div>
+            </div>
+          </div>
+        </Card>
       </motion.div>
 
       {/* Progress steps */}

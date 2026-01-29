@@ -1,5 +1,6 @@
-import { useState, useCallback, useEffect } from 'react'
-import { useWallet } from '@solana/wallet-adapter-react'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { useWallet, useConnection } from '@solana/wallet-adapter-react'
+import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js'
 import { toast } from 'sonner'
 import { useSpectreClient } from './useSpectreClient'
 import {
@@ -11,7 +12,8 @@ import {
   DEMO_POSITIONS,
 } from '@/stores/tradingStore'
 import { generateId } from '@/lib/utils'
-import { PNP_DEMO_MODE as DEMO_MODE } from '@/lib/config/constants'
+import { PNP_DEMO_MODE as DEMO_MODE, PRICE_SCALE } from '@/lib/config/constants'
+import { SpectreTradeClient, type OnChainPosition } from '@/lib/trading/SpectreTradeClient'
 
 export type TradeSide = 'yes' | 'no'
 
@@ -20,11 +22,13 @@ export interface TradeResult {
   signature?: string
   sharesReceived?: number
   executionPrice?: number
+  positionPda?: string
   error?: string
 }
 
 export function usePnp() {
-  const { connected, publicKey } = useWallet()
+  const { connected, publicKey, signTransaction } = useWallet()
+  const { connection } = useConnection()
   const { pnpClient } = useSpectreClient()
   const {
     markets,
@@ -41,6 +45,24 @@ export function usePnp() {
   } = useTradingStore()
 
   const [isTrading, setIsTrading] = useState(false)
+  const [isClosing, setIsClosing] = useState(false)
+
+  // SpectreTradeClient instance
+  const tradeClientRef = useRef<SpectreTradeClient | null>(null)
+
+  // Initialize trade client when wallet connects
+  useEffect(() => {
+    if (connected && publicKey && signTransaction && connection) {
+      tradeClientRef.current = new SpectreTradeClient({
+        connection,
+        publicKey,
+        signTransaction,
+      })
+      console.log('[usePnp] SpectreTradeClient initialized')
+    } else {
+      tradeClientRef.current = null
+    }
+  }, [connected, publicKey, signTransaction, connection])
 
   // Fetch active markets
   const fetchMarkets = useCallback(async (): Promise<Market[]> => {
@@ -81,7 +103,7 @@ export function usePnp() {
     }
   }, [pnpClient, setMarkets, setLoading, setError])
 
-  // Fetch positions
+  // Fetch positions - syncs from chain when not in demo mode
   const fetchPositions = useCallback(async (): Promise<Position[]> => {
     if (!connected) return []
 
@@ -92,36 +114,59 @@ export function usePnp() {
         return DEMO_POSITIONS
       }
 
-      if (!pnpClient) {
+      // Use SpectreTradeClient to fetch on-chain positions
+      const tradeClient = tradeClientRef.current
+      if (!tradeClient) {
+        console.warn('[usePnp] Trade client not initialized')
         return []
       }
 
-      const fetchedPositions = await pnpClient.getPositions()
-      // Map BrowserPnpClient Position type to tradingStore Position type
-      const mappedPositions: Position[] = fetchedPositions.map(p => ({
-        market: p.market,
-        marketQuestion: p.question,
-        yesShares: p.side === 'yes' ? p.shares : 0,
-        noShares: p.side === 'no' ? p.shares : 0,
-        entryPriceYes: p.side === 'yes' ? p.averagePrice : undefined,
-        entryPriceNo: p.side === 'no' ? p.averagePrice : undefined,
-        unrealizedPnl: p.unrealizedPnL,
-        totalInvested: p.shares * p.averagePrice,
-      }))
+      console.log('[usePnp] Fetching positions from chain...')
+      const onChainPositions = await tradeClient.getPositions()
+
+      // Map on-chain positions to store format
+      const mappedPositions: Position[] = onChainPositions
+        .filter(p => p.status === 'open')
+        .map(p => {
+          // Find market info (mock data)
+          const market = markets.find(m => m.address === p.marketId)
+          const currentPrice = market
+            ? (p.side === 'yes' ? market.yesPrice : market.noPrice)
+            : 0.5
+
+          // Calculate unrealized PnL
+          const scaledPrice = Math.floor(currentPrice * PRICE_SCALE)
+          const currentValue = Math.floor((p.shares * scaledPrice) / PRICE_SCALE)
+          const unrealizedPnl = currentValue - p.investedAmount
+
+          return {
+            market: p.marketId,
+            marketQuestion: market?.question || `Market ${p.marketId.slice(0, 8)}...`,
+            yesShares: p.side === 'yes' ? p.shares / LAMPORTS_PER_SOL : 0,
+            noShares: p.side === 'no' ? p.shares / LAMPORTS_PER_SOL : 0,
+            entryPriceYes: p.side === 'yes' ? p.entryPrice / PRICE_SCALE : undefined,
+            entryPriceNo: p.side === 'no' ? p.entryPrice / PRICE_SCALE : undefined,
+            unrealizedPnl: unrealizedPnl / LAMPORTS_PER_SOL,
+            totalInvested: p.investedAmount / LAMPORTS_PER_SOL,
+            positionPda: p.pda,  // Store PDA for closing
+          }
+        })
+
+      console.log(`[usePnp] Synced ${mappedPositions.length} positions from chain`)
       setPositions(mappedPositions)
       return mappedPositions
     } catch (error: any) {
       console.error('Failed to fetch positions:', error)
       return []
     }
-  }, [connected, pnpClient, setPositions])
+  }, [connected, markets, setPositions])
 
-  // Execute a trade
+  // Execute a trade - opens an on-chain position
   const executeTrade = useCallback(
     async (
       marketAddress: string,
       side: TradeSide,
-      amountUsdc: number
+      amountSol: number  // Amount in SOL (not USDC for SPECTRE)
     ): Promise<TradeResult> => {
       if (!connected || !publicKey) {
         return { success: false, error: 'Wallet not connected' }
@@ -139,13 +184,13 @@ export function usePnp() {
           await new Promise((resolve) => setTimeout(resolve, 2000))
 
           const price = side === 'yes' ? market.yesPrice : market.noPrice
-          const shares = amountUsdc / price
+          const shares = amountSol / price
 
           const trade: Trade = {
             id: generateId(),
             market: marketAddress,
             side,
-            amount: amountUsdc,
+            amount: amountSol,
             price,
             shares,
             signature: `sig_${Date.now()}`,
@@ -164,7 +209,7 @@ export function usePnp() {
                   ...p,
                   yesShares: p.yesShares + (side === 'yes' ? shares : 0),
                   noShares: p.noShares + (side === 'no' ? shares : 0),
-                  totalInvested: (p.totalInvested || 0) + amountUsdc,
+                  totalInvested: (p.totalInvested || 0) + amountSol,
                 }
                 : p
             )
@@ -179,14 +224,14 @@ export function usePnp() {
                 noShares: side === 'no' ? shares : 0,
                 entryPriceYes: side === 'yes' ? price : undefined,
                 entryPriceNo: side === 'no' ? price : undefined,
-                totalInvested: amountUsdc,
+                totalInvested: amountSol,
                 unrealizedPnl: 0,
               },
             ])
           }
 
           toast.success(
-            `Bought ${shares.toFixed(2)} ${side.toUpperCase()} shares at $${price.toFixed(3)}`
+            `Bought ${shares.toFixed(2)} ${side.toUpperCase()} shares at ${(price * 100).toFixed(1)}%`
           )
 
           return {
@@ -197,30 +242,63 @@ export function usePnp() {
           }
         }
 
-        // Production: use actual SDK
-        if (!pnpClient) {
-          return { success: false, error: 'PNP client not initialized' }
+        // Production: use SpectreTradeClient for on-chain positions
+        const tradeClient = tradeClientRef.current
+        if (!tradeClient) {
+          return { success: false, error: 'Trade client not initialized' }
         }
 
-        const result = await pnpClient.executeTrade(marketAddress, side, amountUsdc)
+        const price = side === 'yes' ? market.yesPrice : market.noPrice
+        const amountLamports = Math.floor(amountSol * LAMPORTS_PER_SOL)
+
+        console.log(`[usePnp] Opening on-chain position: ${amountSol} SOL on ${side.toUpperCase()}`)
+
+        const result = await tradeClient.openPosition(
+          marketAddress,
+          side,
+          amountLamports,
+          price
+        )
 
         if (result.success) {
+          const shares = amountSol / price
+
           addTrade({
             id: generateId(),
             market: marketAddress,
             side,
-            amount: amountUsdc,
-            price: result.executionPrice || 0,
-            shares: result.sharesReceived || 0,
+            amount: amountSol,
+            price,
+            shares,
             signature: result.signature || '',
             timestamp: new Date(),
             type: 'buy',
           })
 
-          toast.success('Trade executed successfully')
+          // Refresh positions from chain
+          await fetchPositions()
+
+          toast.success(
+            `Position opened: ${shares.toFixed(2)} ${side.toUpperCase()} shares`,
+            {
+              description: `TX: ${result.signature?.slice(0, 8)}...`,
+              action: {
+                label: 'View',
+                onClick: () => window.open(`https://explorer.solana.com/tx/${result.signature}?cluster=devnet`, '_blank')
+              }
+            }
+          )
+
+          return {
+            success: true,
+            signature: result.signature,
+            positionPda: result.positionPda,
+            sharesReceived: shares,
+            executionPrice: price,
+          }
         }
 
-        return result
+        return { success: false, error: result.error }
       } catch (error: any) {
         toast.error(error.message || 'Trade failed')
         return { success: false, error: error.message }
@@ -228,7 +306,95 @@ export function usePnp() {
         setIsTrading(false)
       }
     },
-    [connected, publicKey, markets, positions, pnpClient, addTrade, setPositions]
+    [connected, publicKey, markets, positions, addTrade, setPositions, fetchPositions]
+  )
+
+  // Close a position
+  const closePosition = useCallback(
+    async (marketAddress: string): Promise<TradeResult> => {
+      if (!connected || !publicKey) {
+        return { success: false, error: 'Wallet not connected' }
+      }
+
+      const market = markets.find((m) => m.address === marketAddress)
+      const position = positions.find((p) => p.market === marketAddress)
+
+      if (!position) {
+        return { success: false, error: 'Position not found' }
+      }
+
+      setIsClosing(true)
+
+      try {
+        if (DEMO_MODE) {
+          await new Promise((resolve) => setTimeout(resolve, 2000))
+
+          // Remove position from store
+          const updatedPositions = positions.filter((p) => p.market !== marketAddress)
+          setPositions(updatedPositions)
+
+          toast.success('Position closed successfully')
+          return { success: true, signature: `sig_close_${Date.now()}` }
+        }
+
+        // Production: use SpectreTradeClient
+        const tradeClient = tradeClientRef.current
+        if (!tradeClient) {
+          return { success: false, error: 'Trade client not initialized' }
+        }
+
+        // Get current price for exit
+        const side = position.yesShares > 0 ? 'yes' : 'no'
+        const exitPrice = market
+          ? (side === 'yes' ? market.yesPrice : market.noPrice)
+          : 0.5
+
+        console.log(`[usePnp] Closing position on market ${marketAddress}`)
+
+        const result = await tradeClient.closePosition(marketAddress, exitPrice)
+
+        if (result.success) {
+          // Record the close trade
+          const shares = side === 'yes' ? position.yesShares : position.noShares
+          addTrade({
+            id: generateId(),
+            market: marketAddress,
+            side,
+            amount: position.totalInvested || 0,
+            price: exitPrice,
+            shares,
+            signature: result.signature || '',
+            timestamp: new Date(),
+            type: 'sell',
+          })
+
+          // Refresh positions from chain
+          await fetchPositions()
+
+          const pnlSol = (result.pnl || 0) / LAMPORTS_PER_SOL
+          toast.success(
+            `Position closed: ${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(4)} SOL`,
+            {
+              description: `TX: ${result.signature?.slice(0, 8)}...`,
+              action: {
+                label: 'View',
+                onClick: () => window.open(`https://explorer.solana.com/tx/${result.signature}?cluster=devnet`, '_blank')
+              }
+            }
+          )
+
+          return { success: true, signature: result.signature }
+        }
+
+        return { success: false, error: result.error }
+      } catch (error: any) {
+        toast.error(error.message || 'Close position failed')
+        return { success: false, error: error.message }
+      } finally {
+        setIsClosing(false)
+      }
+    },
+    [connected, publicKey, markets, positions, addTrade, setPositions, fetchPositions]
   )
 
   // Select a market
@@ -261,11 +427,13 @@ export function usePnp() {
     selectedMarket,
     isLoading,
     isTrading,
+    isClosing,
 
     // Actions
     fetchMarkets,
     fetchPositions,
     executeTrade,
+    closePosition,
     selectMarket,
   }
 }

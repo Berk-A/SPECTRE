@@ -12,22 +12,28 @@ import {
   LAMPORTS_PER_SOL,
 } from '@solana/web3.js'
 import { BN } from '@coral-xyz/anchor'
+import {
+  SPECTRE_PROGRAM_ID,
+  DELEGATION_PROGRAM_ID,
+  RPC_ENDPOINT,
+  TEE_RPC_ENDPOINT,
+  VAULT_SEED,
+  DELEGATE_TO_TEE_IX_DISCRIMINATOR,
+  UNDELEGATE_FROM_TEE_IX_DISCRIMINATOR,
+  INITIALIZE_IX_DISCRIMINATOR,
+} from '@/lib/config/constants'
 
 // ============================================
 // Configuration
 // ============================================
 
 // MagicBlock Program IDs
-const DELEGATION_PROGRAM_ID = new PublicKey('DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh')
 const MAGIC_PROGRAM_ID = new PublicKey('Magic11111111111111111111111111111111111111')
 const MAGIC_CONTEXT_ID = new PublicKey('MagicContext1111111111111111111111111111111')
 
 // RPC endpoints
-const L1_RPC = 'https://api.devnet.solana.com'
-const TEE_RPC = 'https://devnet.magicblock.app'
-
-// SPECTRE Program ID
-const SPECTRE_PROGRAM_ID = new PublicKey('6ypxTTHK4q9VC7bABp8U3Sptdt6qNQ7uJHoMqNWKmTuW')
+const L1_RPC = RPC_ENDPOINT
+const TEE_RPC = TEE_RPC_ENDPOINT
 
 // Poll interval for undelegation confirmation
 const POLL_INTERVAL_MS = 2000
@@ -101,7 +107,7 @@ export class BrowserTeeClient {
    */
   getVaultPda(authority: PublicKey): PublicKey {
     const [vaultPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from('spectre_vault'), authority.toBuffer()],
+      [Buffer.from(VAULT_SEED), authority.toBuffer()],
       SPECTRE_PROGRAM_ID
     )
     return vaultPda
@@ -355,78 +361,110 @@ export class BrowserTeeClient {
   // Instruction Builders
   // ============================================
 
+  /**
+   * Get buffer PDA for delegation
+   */
+  private getBufferPda(vault: PublicKey): PublicKey {
+    const [bufferPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('buffer'), vault.toBuffer(), SPECTRE_PROGRAM_ID.toBuffer()],
+      DELEGATION_PROGRAM_ID
+    )
+    return bufferPda
+  }
+
+  /**
+   * Get delegation metadata PDA
+   */
+  private getDelegationMetadataPda(vault: PublicKey): PublicKey {
+    const [metadataPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('delegation_metadata'), vault.toBuffer()],
+      DELEGATION_PROGRAM_ID
+    )
+    return metadataPda
+  }
+
+  /**
+   * Get the vault SOL PDA
+   */
+  private getVaultSolPda(authority: PublicKey): PublicKey {
+    const [vaultSolPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from(VAULT_SEED), authority.toBuffer(), Buffer.from('sol')],
+      SPECTRE_PROGRAM_ID
+    )
+    return vaultSolPda
+  }
+
   private async buildInitVaultInstruction(
     authority: PublicKey,
     vault: PublicKey
   ): Promise<TransactionInstruction> {
-    // SPECTRE vault initialization
-    // Discriminator for 'init_vault'
-    const discriminator = Buffer.from([
-      0x4c, 0x88, 0x14, 0x5d, 0x12, 0xb8, 0x71, 0xf3,
-    ]) // sha256("global:init_vault")[0:8]
+    // SPECTRE vault initialization via the initialize instruction
+    const vaultSolPda = this.getVaultSolPda(authority)
+
+    // Model hash is optional - pass None (32 zero bytes is treated as no hash)
+    const modelHash = Buffer.alloc(33)  // 1 byte for Option tag (0 = None) + 32 for hash
+    modelHash[0] = 0  // None variant
+
+    const data = Buffer.concat([INITIALIZE_IX_DISCRIMINATOR, modelHash])
 
     return new TransactionInstruction({
       keys: [
         { pubkey: authority, isSigner: true, isWritable: true },
         { pubkey: vault, isSigner: false, isWritable: true },
+        { pubkey: vaultSolPda, isSigner: false, isWritable: false },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
       programId: SPECTRE_PROGRAM_ID,
-      data: discriminator,
+      data,
     })
   }
 
+  /**
+   * Build delegate_to_tee instruction
+   * This calls the SPECTRE program's delegate_to_tee instruction which
+   * internally calls the MagicBlock delegation program
+   */
   private async buildDelegateInstruction(
     authority: PublicKey,
     vault: PublicKey,
     delegationRecord: PublicKey
   ): Promise<TransactionInstruction> {
-    // MagicBlock delegation instruction
-    // Discriminator for 'delegate'
-    const discriminator = Buffer.from([
-      0x90, 0xc1, 0xb8, 0x92, 0x3e, 0x5f, 0x3a, 0xd2,
-    ])
-
-    // Delegation args: valid_until (i64), commit_frequency_ms (u32)
-    const validUntil = Buffer.alloc(8)
-    validUntil.writeBigInt64LE(BigInt(Date.now() + 86400000)) // 24 hours
-
-    const commitFrequency = Buffer.alloc(4)
-    commitFrequency.writeUInt32LE(10000) // 10 seconds
-
-    const data = Buffer.concat([discriminator, validUntil, commitFrequency])
+    const bufferPda = this.getBufferPda(vault)
+    const delegationMetadata = this.getDelegationMetadataPda(vault)
 
     return new TransactionInstruction({
       keys: [
-        { pubkey: authority, isSigner: true, isWritable: true },
-        { pubkey: vault, isSigner: false, isWritable: true },
-        { pubkey: delegationRecord, isSigner: false, isWritable: true },
-        { pubkey: MAGIC_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: MAGIC_CONTEXT_ID, isSigner: false, isWritable: false },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: authority, isSigner: true, isWritable: true },  // payer
+        { pubkey: vault, isSigner: false, isWritable: true },  // vault
+        { pubkey: SPECTRE_PROGRAM_ID, isSigner: false, isWritable: false },  // owner_program
+        { pubkey: bufferPda, isSigner: false, isWritable: true },  // buffer
+        { pubkey: delegationRecord, isSigner: false, isWritable: true },  // delegation_record
+        { pubkey: delegationMetadata, isSigner: false, isWritable: true },  // delegation_metadata
+        { pubkey: DELEGATION_PROGRAM_ID, isSigner: false, isWritable: false },  // delegation_program
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },  // system_program
       ],
-      programId: DELEGATION_PROGRAM_ID,
-      data,
+      programId: SPECTRE_PROGRAM_ID,
+      data: DELEGATE_TO_TEE_IX_DISCRIMINATOR,
     })
   }
 
+  /**
+   * Build undelegate_from_tee instruction
+   * This must be called from the TEE RPC, not L1
+   */
   private async buildUndelegateInstruction(
     authority: PublicKey,
     vault: PublicKey
   ): Promise<TransactionInstruction> {
-    // Undelegate discriminator
-    const discriminator = Buffer.from([
-      0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f, 0x70, 0x81,
-    ])
-
     return new TransactionInstruction({
       keys: [
-        { pubkey: authority, isSigner: true, isWritable: true },
-        { pubkey: vault, isSigner: false, isWritable: true },
-        { pubkey: MAGIC_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: authority, isSigner: true, isWritable: true },  // payer
+        { pubkey: vault, isSigner: false, isWritable: true },  // vault
+        { pubkey: MAGIC_CONTEXT_ID, isSigner: false, isWritable: true },  // magic_context
+        { pubkey: MAGIC_PROGRAM_ID, isSigner: false, isWritable: false },  // magic_program
       ],
-      programId: DELEGATION_PROGRAM_ID,
-      data: discriminator,
+      programId: SPECTRE_PROGRAM_ID,
+      data: UNDELEGATE_FROM_TEE_IX_DISCRIMINATOR,
     })
   }
 

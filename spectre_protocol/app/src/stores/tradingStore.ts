@@ -21,6 +21,7 @@ export interface Position {
   entryPriceNo?: number
   unrealizedPnl?: number
   totalInvested?: number
+  positionPda?: string  // On-chain position PDA
 }
 
 export interface Trade {

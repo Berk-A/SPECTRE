@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Wallet, Shield, TrendingUp, BarChart3 } from 'lucide-react'
+import { Wallet, Shield, TrendingUp, BarChart3, Vault } from 'lucide-react'
 import { Card } from '@/components/ui'
 import { formatSol, formatUsd, cn } from '@/lib/utils'
 
@@ -71,16 +71,25 @@ function StatCard({
 interface StatsCardsProps {
   walletBalance?: number
   shieldedBalance?: number
+  vaultBalance?: number
+  availableForTrading?: number
   positionsValue?: number
   totalPnl?: number
+  positionsCount?: number
 }
 
 export function StatsCards({
-  walletBalance = 5.25e9,
-  shieldedBalance = 2.5e9,
-  positionsValue = 45.50,
-  totalPnl = 3.25,
+  walletBalance = 0,
+  shieldedBalance = 0,
+  vaultBalance = 0,
+  availableForTrading = 0,
+  positionsValue = 0,
+  totalPnl = 0,
+  positionsCount = 0,
 }: StatsCardsProps) {
+  // Calculate P&L percentage (avoid division by zero)
+  const pnlPercent = positionsValue > 0 ? (totalPnl / positionsValue) * 100 : 0
+
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
       <StatCard
@@ -92,10 +101,10 @@ export function StatsCards({
       />
 
       <StatCard
-        title="Shielded Balance"
-        value={`${formatSol(shieldedBalance)} SOL`}
-        subValue="Private pool"
-        icon={<Shield className="h-5 w-5 text-neon-purple" />}
+        title="Vault Balance"
+        value={`${formatSol(vaultBalance)} SOL`}
+        subValue={`${formatSol(availableForTrading)} available`}
+        icon={<Vault className="h-5 w-5 text-neon-purple" />}
         color="text-neon-purple"
         delay={0.1}
       />
@@ -103,7 +112,7 @@ export function StatsCards({
       <StatCard
         title="Positions Value"
         value={formatUsd(positionsValue)}
-        subValue="2 active positions"
+        subValue={`${positionsCount} active position${positionsCount !== 1 ? 's' : ''}`}
         icon={<TrendingUp className="h-5 w-5 text-status-success" />}
         color="text-status-success"
         delay={0.2}
@@ -112,7 +121,7 @@ export function StatsCards({
       <StatCard
         title="Total P&L"
         value={formatUsd(totalPnl)}
-        change={7.23}
+        change={pnlPercent}
         icon={<BarChart3 className="h-5 w-5 text-status-warning" />}
         color="text-status-warning"
         delay={0.3}

@@ -5,7 +5,7 @@
  * Uses BrowserPrivacyCash for real ZK proofs when PRIVACY_DEMO_MODE is false.
  */
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { toast } from 'sonner'
 import { usePrivacyStore, type StoredNote } from '@/stores/privacyStore'
@@ -48,6 +48,7 @@ export function usePrivacy() {
   const [completeLoading, setCompleteLoading] = useState(false)
   const [initAttempted, setInitAttempted] = useState(false)
   const [demoPendingWithdrawals, setDemoPendingWithdrawals] = useState<WithdrawalRequest[]>([])
+  const pendingWithdrawalsFetchedRef = useRef(false)
 
   // Calculate balance from unspent notes (demo mode)
   const calculateBalance = useCallback(() => {
@@ -68,6 +69,9 @@ export function usePrivacy() {
     if (!PRIVACY_DEMO_MODE && connected && publicKey && !browserPrivacy.isInitialized && !browserPrivacy.isInitializing && !initAttempted) {
       setInitAttempted(true)
       browserPrivacy.initialize().then(async () => {
+        // Fetch the SDK balance to populate shieldedBalanceSol
+        await browserPrivacy.fetchBalance()
+
         // After init, fetch UTXOs and sync to store (handling recovery)
         const utxos = await browserPrivacy.getUtxos()
 
@@ -102,12 +106,14 @@ export function usePrivacy() {
         }
       })
     }
-  }, [connected, publicKey, browserPrivacy, initAttempted, addNote, calculateBalance])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, publicKey, browserPrivacy.isInitialized, browserPrivacy.isInitializing, initAttempted])
 
   // Reset init attempted and clear notes when wallet disconnects
   useEffect(() => {
     if (!connected) {
       setInitAttempted(false)
+      pendingWithdrawalsFetchedRef.current = false
       usePrivacyStore.getState().clearNotes() // Clear persisted notes on disconnect
       console.log('[usePrivacy] Wallet disconnected, cleared privacy store.')
     }
@@ -334,14 +340,16 @@ export function usePrivacy() {
     }
     // Call the wrapper from useBrowserPrivacy
     return await browserPrivacy.fetchPendingWithdrawals()
-  }, [browserPrivacy, demoPendingWithdrawals])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demoPendingWithdrawals, browserPrivacy.fetchPendingWithdrawals])
 
-  // Automatically fetch pending withdrawals when initialized
+  // Automatically fetch pending withdrawals when initialized (once)
   useEffect(() => {
-    if (!PRIVACY_DEMO_MODE && browserPrivacy.isInitialized) {
-      fetchPendingWithdrawals()
+    if (!PRIVACY_DEMO_MODE && browserPrivacy.isInitialized && !pendingWithdrawalsFetchedRef.current) {
+      pendingWithdrawalsFetchedRef.current = true
+      browserPrivacy.fetchPendingWithdrawals()
     }
-  }, [browserPrivacy.isInitialized, fetchPendingWithdrawals])
+  }, [browserPrivacy.isInitialized])
 
   // Complete Withdrawal
   const completeWithdrawal = useCallback(async (pda: string) => {
@@ -372,12 +380,25 @@ export function usePrivacy() {
     } finally {
       setCompleteLoading(false)
     }
-  }, [browserPrivacy, fetchPendingWithdrawals])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [browserPrivacy.completeWithdrawal, fetchPendingWithdrawals])
 
-  // Get shielded balance (use browser SDK balance if available)
+  // Get shielded balance
+  // Calculate from store notes (source of truth for displayed notes)
+  const storeBalanceSol = notes
+    .filter((n) => !n.spent)
+    .reduce((acc, n) => acc + n.amount, 0) / 1e9
+
+  // Use store balance as primary (it matches the displayed notes)
+  // SDK balance is a secondary check for on-chain verification
   const shieldedBalanceSol = PRIVACY_DEMO_MODE
     ? storedBalanceSol / 1e9
-    : browserPrivacy.shieldedBalanceSol
+    : storeBalanceSol > 0 ? storeBalanceSol : browserPrivacy.shieldedBalanceSol
+
+  // Get vault balance (on-chain state)
+  const vaultBalance = browserPrivacy.vaultBalance
+  const vaultSolBalance = browserPrivacy.vaultSolBalance
+  const availableForTrading = browserPrivacy.availableForTrading
 
   return {
     // State
@@ -390,6 +411,11 @@ export function usePrivacy() {
     unshieldLoading,
     completeLoading,
     pendingWithdrawals: PRIVACY_DEMO_MODE ? demoPendingWithdrawals : browserPrivacy.pendingWithdrawals,
+
+    // Vault balance (on-chain state)
+    vaultBalance,
+    vaultSolBalance,
+    availableForTrading,
 
     // Privacy client state
     isInitialized: PRIVACY_DEMO_MODE ? true : browserPrivacy.isInitialized,
@@ -404,6 +430,7 @@ export function usePrivacy() {
     importNotes,
     calculateBalance,
     fetchBalance: browserPrivacy.fetchBalance,
+    fetchVaultBalance: browserPrivacy.fetchVaultBalance,
     clearCache: browserPrivacy.clearCache,
     fetchPendingWithdrawals,
     completeWithdrawal,

@@ -14,7 +14,8 @@ import {
     type ShieldResult,
     type UnshieldResult,
     type PrivateBalance,
-    type WithdrawalRequest
+    type WithdrawalRequest,
+    type VaultBalance
 } from '@/lib/privacy/BrowserPrivacyCash'
 
 // Global singleton to prevent race conditions
@@ -25,6 +26,8 @@ export interface BrowserPrivacyState {
     isInitializing: boolean
     initProgress: { stage: string; percent: number } | null
     balance: PrivateBalance | null
+    vaultBalance: VaultBalance | null
+    vaultSolBalance: number
     isLoading: boolean
     error: string | null
     pendingWithdrawals: WithdrawalRequest[]
@@ -39,6 +42,8 @@ export function useBrowserPrivacy() {
         isInitializing: false,
         initProgress: null,
         balance: null,
+        vaultBalance: null,
+        vaultSolBalance: 0,
         isLoading: false,
         error: null,
         pendingWithdrawals: []
@@ -121,6 +126,8 @@ export function useBrowserPrivacy() {
                 isInitializing: false,
                 initProgress: null,
                 balance: null,
+                vaultBalance: null,
+                vaultSolBalance: 0,
                 isLoading: false,
                 error: null,
                 pendingWithdrawals: []
@@ -152,6 +159,31 @@ export function useBrowserPrivacy() {
     const getUtxos = useCallback(async () => {
         if (!globalClientInstance?.isInitialized()) return []
         return await globalClientInstance.getUtxos()
+    }, [])
+
+    // Fetch vault balance (on-chain state)
+    const fetchVaultBalance = useCallback(async (): Promise<VaultBalance | null> => {
+        if (!globalClientInstance?.isInitialized()) {
+            return null
+        }
+
+        try {
+            const [vaultBalance, vaultSolBalance] = await Promise.all([
+                globalClientInstance.getVaultBalance(),
+                globalClientInstance.getVaultSolBalance()
+            ])
+
+            setState((s) => ({
+                ...s,
+                vaultBalance,
+                vaultSolBalance
+            }))
+
+            return vaultBalance
+        } catch (error) {
+            console.error('[BrowserPrivacy] Failed to fetch vault balance:', error)
+            return null
+        }
     }, [])
 
     // Fetch pending withdrawals
@@ -296,6 +328,9 @@ export function useBrowserPrivacy() {
         balance: state.balance,
         shieldedBalanceSol: state.balance?.sol ?? 0,
         shieldedBalanceLamports: state.balance?.lamports ?? 0,
+        vaultBalance: state.vaultBalance,
+        vaultSolBalance: state.vaultSolBalance,
+        availableForTrading: state.vaultBalance?.availableBalance ?? 0,
         pendingWithdrawals: state.pendingWithdrawals,
         isLoading: state.isLoading,
         error: state.error,
@@ -303,6 +338,7 @@ export function useBrowserPrivacy() {
         // Actions
         initialize,
         fetchBalance,
+        fetchVaultBalance,
         shield,
         unshield,
         fetchPendingWithdrawals,

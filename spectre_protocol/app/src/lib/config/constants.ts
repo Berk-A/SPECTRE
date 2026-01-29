@@ -33,6 +33,31 @@ export const COMPLETE_WITHDRAWAL_IX_DISCRIMINATOR = Buffer.from([107, 98, 134, 1
 // Account Discriminators
 export const WITHDRAWAL_REQUEST_ACCOUNT_DISCRIMINATOR = Buffer.from([242, 88, 147, 173, 182, 62, 229, 193])
 
+// Trading Instruction Discriminators (Phase 2)
+export const OPEN_POSITION_IX_DISCRIMINATOR = Buffer.from([135, 128, 47, 77, 15, 152, 240, 49])
+export const CLOSE_POSITION_IX_DISCRIMINATOR = Buffer.from([123, 134, 81, 0, 49, 68, 98, 98])
+export const INITIALIZE_STRATEGY_IX_DISCRIMINATOR = Buffer.from([208, 119, 144, 145, 55, 45, 201, 126])
+export const SET_STRATEGY_PARAMS_IX_DISCRIMINATOR = Buffer.from([85, 199, 60, 249, 74, 104, 100, 140])
+export const GENERATE_TRADE_SIGNAL_IX_DISCRIMINATOR = Buffer.from([116, 160, 232, 156, 138, 118, 100, 36])
+export const EXECUTE_TRADE_IX_DISCRIMINATOR = Buffer.from([225, 59, 57, 33, 16, 230, 110, 12])
+
+// TEE Instruction Discriminators (Phase 3)
+export const DELEGATE_TO_TEE_IX_DISCRIMINATOR = Buffer.from([81, 134, 85, 248, 149, 133, 169, 68])
+export const UNDELEGATE_FROM_TEE_IX_DISCRIMINATOR = Buffer.from([79, 114, 132, 169, 39, 44, 156, 139])
+
+// Position Account Discriminator
+export const POSITION_ACCOUNT_DISCRIMINATOR = Buffer.from([170, 188, 143, 228, 122, 64, 247, 208])
+
+// Strategy Config Account Discriminator
+export const STRATEGY_CONFIG_ACCOUNT_DISCRIMINATOR = Buffer.from([141, 207, 39, 186, 127, 239, 51, 76])
+
+// PDA Seeds
+export const POSITION_SEED = 'position'
+export const STRATEGY_CONFIG_SEED = 'strategy_config'
+
+// Trading Constants
+export const PRICE_SCALE = 1_000_000  // Price scaling factor (1e6)
+
 // Token mints
 export const USDC_DEVNET = new PublicKey(
   '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'
@@ -56,13 +81,14 @@ export const MIN_DEPOSIT_SOL = 0.001
 export const MAX_DEPOSIT_SOL = 1000
 
 // Feature-specific demo modes
-// PNP: Demo mode ON because program pnpxFx... doesn't exist on devnet
-export const PNP_DEMO_MODE = true
+// PNP: Demo mode OFF - Real on-chain positions via SPECTRE program
+// Markets are mocked in frontend, but positions are recorded on-chain
+export const PNP_DEMO_MODE = false
 // Privacy: Demo mode OFF - Real SDK with Poseidon hashing and ZK proofs
 // Uses Vercel serverless proxy to bypass CORS restrictions
 export const PRIVACY_DEMO_MODE = false
-// TEE: Demo mode ON - MagicBlock delegation program may not be on devnet
-export const TEE_DEMO_MODE = true
+// TEE: Demo mode OFF - Real MagicBlock delegation on devnet
+export const TEE_DEMO_MODE = false
 
 // Legacy compatibility - true if ANY feature is in demo mode
 export const DEMO_MODE = PNP_DEMO_MODE || PRIVACY_DEMO_MODE || TEE_DEMO_MODE
